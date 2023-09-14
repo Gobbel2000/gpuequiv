@@ -10,19 +10,23 @@ const INF: u32 = 1 << 31;
 struct GameGraph {
     n_vertices: u32,
     adj: Vec<Vec<u32>>,
+    reverse: Vec<Vec<u32>>,
     attacker_pos: Vec<bool>,
 }
 
 impl GameGraph {
     fn new(n_vertices: u32, edges: &[(u32, u32)], attacker_pos: &[bool]) -> Self {
         let mut adj = vec![vec![]; n_vertices as usize];
+        let mut reverse = vec![vec![]; n_vertices as usize];
         for (from, to) in edges {
             adj[*from as usize].push(*to);
+            reverse[*to as usize].push(*from);
         }
 
         Self {
             n_vertices,
             adj,
+            reverse,
             attacker_pos: attacker_pos.to_vec(),
         }
     }
@@ -40,7 +44,6 @@ impl GameGraph {
                 Some(*state)
             }))
             .collect();
-        println!("{:?}\n{:?}\n{:?}", self.adj, column_indices, row_offsets);
         (column_indices, row_offsets)
     }
 }
@@ -118,13 +121,13 @@ async fn execute_gpu(graph: &GameGraph) -> Vec<Option<u32>> {
 }
 
 async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &GameGraph) -> Vec<Option<u32>> {
-    // Boolean array to indicate the nodes that should be reached in the reachability game
-    // Each bool is saved as u32 so it can be copied to the GPU
-    let to_reach: Vec<u32> = graph.adj.iter()
-        .zip(&graph.attacker_pos)
-        // 1 if no outgoing edges and defender position, 0 otherwise
-        .map(|(adj, atk)| u32::from(!atk && adj.is_empty()))
-        .collect();
+    let mut to_visit: Vec<u32> = Vec::new();
+    for i in 0..graph.n_vertices {
+        // Initialize with all defender positions that have no outgoing edges
+        if !graph.attacker_pos[i as usize] && graph.adj[i as usize].is_empty() {
+            to_visit.push(i);
+        }
+    }
 
     // BUFFERS
 
@@ -156,15 +159,6 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &G
 
     let output_size = (graph.n_vertices as usize * std::mem::size_of::<u32>()) as u64;
 
-    // Indicates whether each node should be visited in this iteration
-    let visit_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Visit node flags storage buffer"),
-        contents: bytemuck::cast_slice(&to_reach),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST
-    });
-
     let init_n_steps = vec![INF; graph.n_vertices as usize];
     // Output buffer that holds the number of steps for each node required to reach a wanted end point
     let output_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -190,7 +184,7 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &G
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -205,21 +199,6 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &G
                     min_binding_size: None,
                 },
                 count: None,
-            },
-        ],
-    });
-
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Main bind group"),
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: visit_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_buffer.as_entire_binding(),
             },
         ],
     });
@@ -299,8 +278,47 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &G
         entry_point: "main",
     });
 
+    let mut prev = init_n_steps;
+    let mut visit_buffer_size = to_visit.len();
+    let mut visit_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("List of nodes to visit storage buffer"),
+        size: (visit_buffer_size * std::mem::size_of::<u32>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
 
-    for _ in 0..graph.n_vertices {
+    loop {
+        // Resize the buffer if necessary to hold all nodes that need to be visited
+        if visit_buffer_size < to_visit.len() {
+            visit_buffer_size = to_visit.len();
+            visit_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("List of nodes to visit storage buffer"),
+                size: (visit_buffer_size * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        queue.write_buffer(&visit_buffer, 0, bytemuck::cast_slice(&to_visit));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Main bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: visit_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         // Program pipeline
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Algorithm iteration encoder")
@@ -311,66 +329,56 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, graph: &G
             cpass.set_bind_group(0, &bind_group, &[]);
             cpass.set_bind_group(1, &graph_bind_group, &[]);
 
-            // Ceil( n / WORKGROUP_SIZE )
-            let n = graph.n_vertices as u32;
-            let workgroup_count = if n % WORKGROUP_SIZE > 0 {
-                n / WORKGROUP_SIZE + 1
+            // Ceil( n_visit / WORKGROUP_SIZE )
+            let n_visit = to_visit.len() as u32;
+            let workgroup_count = if n_visit % WORKGROUP_SIZE > 0 {
+                n_visit / WORKGROUP_SIZE + 1
             } else {
-                n / WORKGROUP_SIZE
+                n_visit / WORKGROUP_SIZE
             };
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
+        // Copy output to staging buffer
+        encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, output_size);
         // Submit command encoder for processing by GPU
         queue.submit(Some(encoder.finish()));
+
+        let buffer_slice = staging_buffer.slice(..);
+        let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+
+        to_visit.clear();
+
         // Wait for the GPU to finish work
         device.poll(wgpu::Maintain::Wait);
-        
-        //TODO: Copy and read visit_buffer and break loop if no more nodes need visiting
-    }
 
-    // Another command encoder for retrieving the result
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Result read encoder")
-    });
-    // Copy output to staging buffer
-    encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, output_size);
-    queue.submit(Some(encoder.finish()));
+        if let Some(Ok(())) = receiver.receive().await {
+            let data = buffer_slice.get_mapped_range();
+            let output: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
 
-    // Note that we're not calling `.await` here.
-    let buffer_slice = staging_buffer.slice(..);
-    // Sets the buffer up for mapping, sending over the result of the mapping back to us when it is finished.
-    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+            drop(data);
+            staging_buffer.unmap();
 
-    // Poll the device in a blocking manner so that our future resolves.
-    // In an actual application, `device.poll(...)` should
-    // be called in an event loop or on another thread.
-    device.poll(wgpu::Maintain::Wait);
-
-    // Awaits until `buffer_future` can be read from
-    if let Some(Ok(())) = receiver.receive().await {
-        // Gets contents of buffer
-        let data = buffer_slice.get_mapped_range();
-        // Since contents are got in bytes, this converts these bytes back to u32
-        let result = bytemuck::cast_slice(&data).to_vec();
-
-        // With the current interface, we have to make sure all mapped views are
-        // dropped before we unmap the buffer.
-        drop(data);
-        staging_buffer.unmap(); // Unmaps buffer from memory
-                                // If you are familiar with C++ these 2 lines can be thought of similarly to:
-                                //   delete myPointer;
-                                //   myPointer = NULL;
-                                // It effectively frees the memory
-
-        // Returns data from buffer
-        result.into_iter()
-            // High values mean no endpoint could be reached from this node
-            .map(|n| if n >= INF { None } else { Some(n) })
-            .collect()
-    } else {
-        panic!("failed to run compute on gpu!")
+            for (v, (new_step, prev_step)) in iter::zip(&output, &prev).enumerate() {
+                if new_step < prev_step {
+                    // Distance was updated: Visit parent nodes next.
+                    for w in &graph.reverse[v] {
+                        to_visit.push(*w);
+                    }
+                }
+            }
+            if to_visit.is_empty() {
+                // Nothing was updated, we are done.
+                return output.into_iter()
+                    // High values mean no endpoint could be reached from this node
+                    .map(|n| if n >= INF { None } else { Some(n) })
+                    .collect()
+            }
+            prev = output;
+        } else {
+            panic!("failed to run compute on gpu!")
+        }
     }
 }
 
