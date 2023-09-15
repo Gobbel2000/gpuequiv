@@ -8,15 +8,15 @@ const WORKGROUP_SIZE: u32 = 64;
 const INF: u32 = 1 << 31;
 
 #[derive(Debug, Clone)]
-struct GameGraph {
-    n_vertices: u32,
-    adj: Vec<Vec<u32>>,
-    reverse: Vec<Vec<u32>>,
-    attacker_pos: Vec<bool>,
+pub struct GameGraph {
+    pub n_vertices: u32,
+    pub adj: Vec<Vec<u32>>,
+    pub reverse: Vec<Vec<u32>>,
+    pub attacker_pos: Vec<bool>,
 }
 
 impl GameGraph {
-    fn new(n_vertices: u32, edges: &[(u32, u32)], attacker_pos: &[bool]) -> Self {
+    pub fn new(n_vertices: u32, edges: &[(u32, u32)], attacker_pos: &[bool]) -> Self {
         let mut adj = vec![vec![]; n_vertices as usize];
         let mut reverse = vec![vec![]; n_vertices as usize];
         for (from, to) in edges {
@@ -49,54 +49,17 @@ impl GameGraph {
     }
 }
 
-fn example_graph() -> GameGraph {
-    let attacker_pos: Vec<bool> = (0..18)
-        .map(|i| [0, 2, 4, 6, 9, 11, 12, 14, 17].contains(&i))
-        .collect();
-    GameGraph::new(
-        18,
-        &[
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 4),
-            (4, 5),
-            (5, 6),
-            (6, 7),
-            (6, 8),
-            (8, 5),
-            (1, 9),
-            (9, 10),
-            (10, 11),
-            (11, 3),
-            (10, 12),
-            (12, 10),
-            (0, 13),
-            (13, 14),
-            (14, 15),
-            (14, 16),
-            (16, 17),
-        ],
-        &attacker_pos,
-    )
-}
-
-struct EnergyGame {
-    graph: GameGraph,
+pub struct EnergyGame {
+    pub graph: GameGraph,
 }
 
 impl EnergyGame {
-    fn example_graph() -> Self {
-        Self {
-            graph: example_graph(),
-        }
-    }
 
-    async fn get_gpu_runner(&mut self) -> GPURunner {
+    pub async fn get_gpu_runner(&mut self) -> GPURunner {
         GPURunner::with_game(self).await
     }
 
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         let mut runner = self.get_gpu_runner().await;
         let n_steps = runner.execute_gpu().await.unwrap();
 
@@ -113,7 +76,7 @@ impl EnergyGame {
 
 }
 
-struct GPURunner<'a> {
+pub struct GPURunner<'a> {
     game: &'a mut EnergyGame,
     device: Device,
     queue: Queue,
@@ -139,7 +102,7 @@ struct GPURunner<'a> {
 
 impl<'a> GPURunner<'a> {
 
-    async fn with_game(game: &'a mut EnergyGame) -> GPURunner<'a> {
+    pub async fn with_game(game: &'a mut EnergyGame) -> GPURunner<'a> {
         let (device, queue) = Self::get_device().await;
 
         let graph = &game.graph;
@@ -364,7 +327,7 @@ impl<'a> GPURunner<'a> {
         self.queue.write_buffer(&self.visit_buf, 0, bytemuck::cast_slice(&self.to_visit));
     }
 
-    async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
+    pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
         loop {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
@@ -445,21 +408,6 @@ fn bgl_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-async fn run() {
-    let mut game = EnergyGame::example_graph();
-    game.run().await;
-}
 
-fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        simple_logger::init_with_level(log::Level::Warn).expect("Could not initialize logger");
-        pollster::block_on(run());
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-        console_log::init().expect("could not initialize logger");
-        wasm_bindgen_futures::spawn_local(run());
-    }
-}
+#[cfg(test)]
+mod tests;
