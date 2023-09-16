@@ -76,20 +76,23 @@ impl EnergyGame {
 
 }
 
+struct ShaderObjects {
+    visit_list: Vec<u32>,
+    visit_capacity: usize,
+    visit_buf: Buffer,
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::ComputePipeline,
+}
+
 pub struct GPURunner<'a> {
     game: &'a mut EnergyGame,
     device: Device,
     queue: Queue,
-
-    to_visit: Vec<u32>,
-    visit_capacity: usize,
     prev_output: Vec<u32>,
 
-    visit_buf: Buffer,
     output_buf: Buffer,
     staging_buf: Buffer,
     main_bind_group_layout: wgpu::BindGroupLayout,
-    main_bind_group: wgpu::BindGroup,
 
     _graph_column_indices_buf: Buffer,
     _graph_row_offsets_buf: Buffer,
@@ -97,7 +100,8 @@ pub struct GPURunner<'a> {
     _graph_bind_group_layout: wgpu::BindGroupLayout,
     graph_bind_group: wgpu::BindGroup,
 
-    pipeline: wgpu::ComputePipeline,
+    def_shader: ShaderObjects,
+    atk_shader: ShaderObjects,
 }
 
 impl<'a> GPURunner<'a> {
@@ -105,26 +109,8 @@ impl<'a> GPURunner<'a> {
     pub async fn with_game(game: &'a mut EnergyGame) -> GPURunner<'a> {
         let (device, queue) = Self::get_device().await;
 
-        let graph = &game.graph;
-        let mut to_visit = Vec::new();
-        for i in 0..graph.n_vertices {
-            // Initialize with all defender positions that have no outgoing edges
-            if !graph.attacker_pos[i as usize] && graph.adj[i as usize].is_empty() {
-                to_visit.push(i);
-            }
-        }
-
-        let visit_capacity = to_visit.len();
-        let visit_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("List of nodes to visit storage buffer"),
-            contents: bytemuck::cast_slice(&to_visit),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let prev_output = vec![INF; graph.n_vertices as usize];
-        let output_size = (graph.n_vertices as usize * std::mem::size_of::<u32>()) as u64;
+        let prev_output = vec![INF; game.graph.n_vertices as usize];
+        let output_size = (game.graph.n_vertices as usize * std::mem::size_of::<u32>()) as u64;
         // Output buffer that holds the number of steps for each node required to reach a wanted end point
         let output_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Shader output buffer"),
@@ -141,20 +127,6 @@ impl<'a> GPURunner<'a> {
         });
 
         let main_bind_group_layout = Self::main_bind_group_layout(&device);
-        let main_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Main bind group"),
-            layout: &main_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: visit_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output_buf.as_entire_binding(),
-                },
-            ],
-        });
 
         let graph_buffers = Self::graph_buffers(&game.graph, &device);
         let graph_bind_group_layout = Self::graph_bind_group_layout(&device);
@@ -170,27 +142,20 @@ impl<'a> GPURunner<'a> {
             bind_group_layouts: &[&main_bind_group_layout, &graph_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
-        });
+
+        let def_shader = Self::defense_shader(&device, &game, &main_bind_group_layout, &shader, &pipeline_layout, &output_buf);
+        let atk_shader = Self::attack_shader(&device, &main_bind_group_layout, &shader, &pipeline_layout, &output_buf);
 
         GPURunner {
             game,
             device,
             queue,
 
-            to_visit,
-            visit_capacity,
             prev_output,
 
-            visit_buf,
             output_buf,
             staging_buf,
             main_bind_group_layout,
-            main_bind_group,
 
             _graph_column_indices_buf: graph_buffers.0,
             _graph_row_offsets_buf: graph_buffers.1,
@@ -198,7 +163,8 @@ impl<'a> GPURunner<'a> {
             _graph_bind_group_layout: graph_bind_group_layout,
             graph_bind_group,
 
-            pipeline,
+            def_shader,
+            atk_shader,
         }
     }
 
@@ -232,6 +198,112 @@ impl<'a> GPURunner<'a> {
                 bgl_entry(1, false), // output_buffer
             ],
         })
+    }
+
+    fn attack_shader(
+        device: &Device,
+        main_bind_group_layout: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+        pipeline_layout: &wgpu::PipelineLayout,
+        output_buf: &Buffer,
+    ) -> ShaderObjects {
+        // Initialize with empty attack visit list
+        let visit_list = Vec::new();
+        let visit_capacity = 8;  // Buffer size cannot be zero
+        let visit_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("List of attack nodes to visit storage buffer"),
+            size: (visit_capacity * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Main attack shader bind group"),
+            layout: &main_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: visit_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Attack compute pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "attack",
+        });
+
+        ShaderObjects {
+            visit_list,
+            visit_capacity,
+            visit_buf,
+            bind_group,
+            pipeline,
+        }
+    }
+
+    fn defense_shader(
+        device: &Device,
+        game: &EnergyGame,
+        main_bind_group_layout: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+        pipeline_layout: &wgpu::PipelineLayout,
+        output_buf: &Buffer,
+    ) -> ShaderObjects {
+        let mut visit_list = Vec::new();
+        for i in 0..game.graph.n_vertices {
+            // Initialize with all defender positions that have no outgoing edges
+            if !game.graph.attacker_pos[i as usize] && game.graph.adj[i as usize].is_empty() {
+                visit_list.push(i);
+            }
+        }
+
+        let visit_capacity = visit_list.len();
+        let visit_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("List of defense nodes to visit storage buffer"),
+            contents: bytemuck::cast_slice(&visit_list),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Defense compute pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "defend",
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Main defense shader bind group"),
+            layout: &main_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: visit_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        ShaderObjects {
+            visit_list,
+            visit_capacity,
+            visit_buf,
+            bind_group,
+            pipeline,
+        }
     }
 
     fn graph_buffers(graph: &GameGraph, device: &Device) -> (Buffer, Buffer, Buffer) {
@@ -297,34 +369,36 @@ impl<'a> GPURunner<'a> {
     // Update the storage buffer, and resize that buffer if necessary, to accommodate new to_visit
     fn set_visit_list(&mut self) {
         // Resize the buffer if necessary to hold all nodes that need to be visited
-        if self.visit_capacity < self.to_visit.len() {
-            self.visit_capacity = self.to_visit.len();
-            self.visit_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("List of nodes to visit storage buffer"),
-                size: (self.visit_capacity * std::mem::size_of::<u32>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.main_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Main bind group"),
-                layout: &self.main_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.visit_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.output_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        for shader in [&mut self.def_shader, &mut self.atk_shader] {
+            if shader.visit_capacity < shader.visit_list.len() {
+                shader.visit_capacity = shader.visit_list.len();
+                shader.visit_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("List of nodes to visit storage buffer"),
+                    size: (shader.visit_capacity * std::mem::size_of::<u32>()) as u64,
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_SRC
+                        | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                shader.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Main bind group"),
+                    layout: &self.main_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: shader.visit_buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.output_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+            }
+            // Schedule writing new visit list in buffer
+            self.queue.write_buffer(&shader.visit_buf, 0, bytemuck::cast_slice(&shader.visit_list));
         }
 
-        // Schedule writing new visit list in buffer
-        self.queue.write_buffer(&self.visit_buf, 0, bytemuck::cast_slice(&self.to_visit));
     }
 
     pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
@@ -332,14 +406,14 @@ impl<'a> GPURunner<'a> {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
-            {
+            for shader in [&self.def_shader, &self.atk_shader] {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
-                cpass.set_pipeline(&self.pipeline);
-                cpass.set_bind_group(0, &self.main_bind_group, &[]);
+                cpass.set_pipeline(&shader.pipeline);
+                cpass.set_bind_group(0, &shader.bind_group, &[]);
                 cpass.set_bind_group(1, &self.graph_bind_group, &[]);
 
                 // Ceil( n_visit / WORKGROUP_SIZE )
-                let n_visit = self.to_visit.len() as u32;
+                let n_visit = shader.visit_list.len() as u32;
                 let workgroup_count = if n_visit % WORKGROUP_SIZE > 0 {
                     n_visit / WORKGROUP_SIZE + 1
                 } else {
@@ -358,7 +432,8 @@ impl<'a> GPURunner<'a> {
             buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
 
 
-            self.to_visit.clear();
+            self.def_shader.visit_list.clear();
+            self.atk_shader.visit_list.clear();
             // Wait for the GPU to finish work
             self.device.poll(wgpu::Maintain::Wait);
 
@@ -372,12 +447,16 @@ impl<'a> GPURunner<'a> {
                 for (v, (new_step, prev_step)) in iter::zip(&output, &self.prev_output).enumerate() {
                     if new_step < prev_step {
                         // Distance was updated: Visit parent nodes next.
-                        for w in &self.game.graph.reverse[v] {
-                            self.to_visit.push(*w);
+                        for &w in &self.game.graph.reverse[v] {
+                            if self.game.graph.attacker_pos[w as usize] {
+                                self.atk_shader.visit_list.push(w);
+                            } else {
+                                self.def_shader.visit_list.push(w);
+                            }
                         }
                     }
                 }
-                if self.to_visit.is_empty() {
+                if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                     // Nothing was updated, we are done.
                     return Ok(output.into_iter()
                         // High values mean no endpoint could be reached from this node
