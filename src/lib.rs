@@ -4,6 +4,7 @@ use std::iter;
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
 
+// Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
 const INF: u32 = 1 << 31;
 
@@ -12,30 +13,39 @@ pub struct GameGraph {
     pub n_vertices: u32,
     pub adj: Vec<Vec<u32>>,
     pub reverse: Vec<Vec<u32>>,
+    pub weights: Vec<Vec<Energy>>,
     pub attacker_pos: Vec<bool>,
 }
 
 impl GameGraph {
-    pub fn new(n_vertices: u32, edges: &[(u32, u32)], attacker_pos: &[bool]) -> Self {
+    pub fn new(n_vertices: u32, edges: &[(u32, u32, Energy)], attacker_pos: &[bool]) -> Self {
         let mut adj = vec![vec![]; n_vertices as usize];
         let mut reverse = vec![vec![]; n_vertices as usize];
-        for (from, to) in edges {
+        let mut weights = vec![vec![]; n_vertices as usize];
+        for (from, to, e) in edges {
             adj[*from as usize].push(*to);
             reverse[*to as usize].push(*from);
+            weights[*from as usize].push(*e);
         }
 
         Self {
             n_vertices,
             adj,
             reverse,
+            weights,
             attacker_pos: attacker_pos.to_vec(),
         }
     }
 
-    fn csr(&self) -> (Vec<u32>, Vec<u32>) {
+    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let column_indices = self.adj.iter()
             .flatten()
             .copied()
+            .collect();
+        let weights = self.weights.iter()
+            .flatten()
+            .copied()
+            .map(|e| e.data)
             .collect();
         // Cumulative sum of all list lengths. 0 is prepended manually
         let row_offsets = iter::once(0).chain(
@@ -45,15 +55,46 @@ impl GameGraph {
                 Some(*state)
             }))
             .collect();
-        (column_indices, row_offsets)
+        (column_indices, row_offsets, weights)
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Energy {
+    data: u32,
+}
+
+impl From<u32> for Energy {
+    fn from(data: u32) -> Self {
+        Energy { data }
+    }
+}
+
+impl Default for Energy {
+    fn default() -> Self {
+        Energy::zero()
+    }
+}
+
+impl Energy {
+    fn zero() -> Self {
+        Energy { data: 0 }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct EnergyGame {
     pub graph: GameGraph,
+    pub energies: Vec<Vec<Energy>>,
+    pub to_reach: Vec<u32>,
 }
 
 impl EnergyGame {
+
+    pub fn from_graph(graph: GameGraph) -> Self {
+        let energies = vec![vec![]; graph.n_vertices as usize];
+        EnergyGame { graph, energies, to_reach: vec![] }
+    }
 
     pub async fn get_gpu_runner(&mut self) -> GPURunner {
         GPURunner::with_game(self).await
@@ -78,11 +119,133 @@ impl EnergyGame {
 
 struct ShaderObjects {
     visit_list: Vec<u32>,
-    visit_capacity: usize,
-    visit_buf: Buffer,
+    energies: Vec<Energy>,
+    energies_buf: Buffer,
+    energies_staging_buf: Buffer,
+    node_offsets_buf: Buffer,
+    successor_offsets_buf: Buffer,
+    minima_buf: Buffer,
+    minima_staging_buf: Buffer,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::ComputePipeline,
 }
+
+impl ShaderObjects {
+    fn per_player_shader(
+        is_attack: bool,
+        device: &Device,
+        game: &EnergyGame,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+        pipeline_layout: &wgpu::PipelineLayout,
+    ) -> ShaderObjects {
+        let visit_list: Vec<u32> = game.to_reach.iter()
+            .filter(|&v| game.graph.attacker_pos[*v as usize] ^ !is_attack)
+            .copied()
+            .collect();
+
+        let (node_offsets, successor_offsets, energies) = GPURunner::memory_map(&visit_list, game);
+
+        let player = if is_attack { "Attack" } else { "Defense" };
+
+        let energies_buf;
+        if energies.is_empty() {
+            // Initialize 0-filled buffers with some initial size.
+            // Buffers with size 0 are not allowed.
+            const INITIAL_ENERGIES_CAPACITY: usize = 64;
+            energies_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Energies storage buffer", player)),
+                size: (INITIAL_ENERGIES_CAPACITY * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+        } else {
+            energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Energies storage buffer", player)),
+                contents: bytemuck::cast_slice(&energies.iter().map(|e| e.data).collect::<Vec<u32>>()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            });
+        }
+        let energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} Energies staging buffer", player)),
+            size: energies_buf.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{} Node offsets storage buffer", player)),
+            contents: bytemuck::cast_slice(&node_offsets),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let successor_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{} Successor offsets storage buffer", player)),
+            contents: bytemuck::cast_slice(&successor_offsets),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        // Output flags are bit-packed with 32 bools per u32. Round up to next multiple of 64.
+        // minima_capacity is measured in number of u32's.
+        let minima_capacity = (((energies.len() as i64 - 1) / 64 + 1) * 2) as usize;
+        let minima_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} Minimal energy flags storage buffer", player)),
+            size: (minima_capacity * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        // For reading minima_buf on the CPU
+        let minima_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} Minima output staging buffer", player)),
+            size: minima_buf.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("{} Main shader bind group", player)),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: energies_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: node_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: minima_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(&format!("{} Minima compute pipeline", player)),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "process_energies",
+        });
+
+        ShaderObjects {
+            visit_list,
+            energies,
+            energies_buf,
+            energies_staging_buf,
+            node_offsets_buf,
+            successor_offsets_buf,
+            minima_buf,
+            minima_staging_buf,
+            bind_group,
+            pipeline,
+        }
+    }
+}
+
 
 pub struct GPURunner<'a> {
     game: &'a mut EnergyGame,
@@ -90,18 +253,14 @@ pub struct GPURunner<'a> {
     queue: Queue,
     prev_output: Vec<u32>,
 
-    output_buf: Buffer,
-    staging_buf: Buffer,
-    main_bind_group_layout: wgpu::BindGroupLayout,
+    energy_bind_group_layout: wgpu::BindGroupLayout,
 
-    _graph_column_indices_buf: Buffer,
-    _graph_row_offsets_buf: Buffer,
-    _graph_attacker_pos_buf: Buffer,
+    _graph_bufs: (Buffer, Buffer, Buffer),
     _graph_bind_group_layout: wgpu::BindGroupLayout,
     graph_bind_group: wgpu::BindGroup,
 
-    def_shader: ShaderObjects,
     atk_shader: ShaderObjects,
+    def_shader: ShaderObjects,
 }
 
 impl<'a> GPURunner<'a> {
@@ -110,6 +269,7 @@ impl<'a> GPURunner<'a> {
         let (device, queue) = Self::get_device().await;
 
         let prev_output = vec![INF; game.graph.n_vertices as usize];
+        /*
         let output_size = (game.graph.n_vertices as usize * std::mem::size_of::<u32>()) as u64;
         // Output buffer that holds the number of steps for each node required to reach a wanted end point
         let output_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -117,7 +277,6 @@ impl<'a> GPURunner<'a> {
             contents: bytemuck::cast_slice(&prev_output),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
-
         // Staging buffer for mapping the output buffer back to CPU memory for reading
         let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shader output staging buffer"),
@@ -125,26 +284,36 @@ impl<'a> GPURunner<'a> {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        */
 
-        let main_bind_group_layout = Self::main_bind_group_layout(&device);
+        let energy_bind_group_layout = Self::energy_bind_group_layout(&device);
 
         let graph_buffers = Self::graph_buffers(&game.graph, &device);
         let graph_bind_group_layout = Self::graph_bind_group_layout(&device);
         let graph_bind_group = Self::graph_bind_group(&graph_bind_group_layout, &device, &graph_buffers);
 
+        /*
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute shader module"),
             // Shader source embedded in binary
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
         });
+        */
+        let minima_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Minima shader module"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("minima.wgsl"))),
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline layout"),
-            bind_group_layouts: &[&main_bind_group_layout, &graph_bind_group_layout],
+            bind_group_layouts: &[&energy_bind_group_layout, &graph_bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        let def_shader = Self::defense_shader(&device, &game, &main_bind_group_layout, &shader, &pipeline_layout, &output_buf);
-        let atk_shader = Self::attack_shader(&device, &main_bind_group_layout, &shader, &pipeline_layout, &output_buf);
+        let atk_shader = ShaderObjects::per_player_shader(
+            true,  &device, &game, &energy_bind_group_layout, &minima_shader, &pipeline_layout);
+        let def_shader = ShaderObjects::per_player_shader(
+            false, &device, &game, &energy_bind_group_layout, &minima_shader, &pipeline_layout);
 
         GPURunner {
             game,
@@ -152,19 +321,13 @@ impl<'a> GPURunner<'a> {
             queue,
 
             prev_output,
-
-            output_buf,
-            staging_buf,
-            main_bind_group_layout,
-
-            _graph_column_indices_buf: graph_buffers.0,
-            _graph_row_offsets_buf: graph_buffers.1,
-            _graph_attacker_pos_buf: graph_buffers.2,
+            energy_bind_group_layout,
+            _graph_bufs: graph_buffers,
             _graph_bind_group_layout: graph_bind_group_layout,
             graph_bind_group,
 
-            def_shader,
             atk_shader,
+            def_shader,
         }
     }
 
@@ -190,6 +353,7 @@ impl<'a> GPURunner<'a> {
             .expect("Could not get device")
     }
 
+    /*
     fn main_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Main bind group layout"),
@@ -199,115 +363,22 @@ impl<'a> GPURunner<'a> {
             ],
         })
     }
+    */
 
-    fn attack_shader(
-        device: &Device,
-        main_bind_group_layout: &wgpu::BindGroupLayout,
-        shader: &wgpu::ShaderModule,
-        pipeline_layout: &wgpu::PipelineLayout,
-        output_buf: &Buffer,
-    ) -> ShaderObjects {
-        // Initialize with empty attack visit list
-        let visit_list = Vec::new();
-        let visit_capacity = 8;  // Buffer size cannot be zero
-        let visit_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("List of attack nodes to visit storage buffer"),
-            size: (visit_capacity * std::mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Main attack shader bind group"),
-            layout: &main_bind_group_layout,
+    fn energy_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Energy bind group layout"),
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: visit_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output_buf.as_entire_binding(),
-                },
+                bgl_entry(0, false), // energies, writable
+                bgl_entry(1, true),  // node offsets
+                bgl_entry(2, true),  // successor offsets
+                bgl_entry(3, false), // minima, writable
             ],
-        });
-
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Attack compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "attack",
-        });
-
-        ShaderObjects {
-            visit_list,
-            visit_capacity,
-            visit_buf,
-            bind_group,
-            pipeline,
-        }
-    }
-
-    fn defense_shader(
-        device: &Device,
-        game: &EnergyGame,
-        main_bind_group_layout: &wgpu::BindGroupLayout,
-        shader: &wgpu::ShaderModule,
-        pipeline_layout: &wgpu::PipelineLayout,
-        output_buf: &Buffer,
-    ) -> ShaderObjects {
-        let mut visit_list = Vec::new();
-        for i in 0..game.graph.n_vertices {
-            // Initialize with all defender positions that have no outgoing edges
-            if !game.graph.attacker_pos[i as usize] && game.graph.adj[i as usize].is_empty() {
-                visit_list.push(i);
-            }
-        }
-
-        let visit_capacity = visit_list.len();
-        let visit_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("List of defense nodes to visit storage buffer"),
-            contents: bytemuck::cast_slice(&visit_list),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Defense compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "defend",
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Main defense shader bind group"),
-            layout: &main_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: visit_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        ShaderObjects {
-            visit_list,
-            visit_capacity,
-            visit_buf,
-            bind_group,
-            pipeline,
-        }
+        })
     }
 
     fn graph_buffers(graph: &GameGraph, device: &Device) -> (Buffer, Buffer, Buffer) {
-        let (c, r) = graph.csr();
+        let (c, r, w) = graph.csr();
         let column_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Input graph column indices storage bufer"),
             contents: bytemuck::cast_slice(&c),
@@ -320,17 +391,13 @@ impl<'a> GPURunner<'a> {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let attacker_pos_u32: Vec<u32>  = graph.attacker_pos
-           .iter()
-           .map(|b| u32::from(*b))
-           .collect();
-        let attacker_pos_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph attacker positions storage buffer"),
-            contents: bytemuck::cast_slice(&attacker_pos_u32),
+        let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Input graph edge weights storage buffer"),
+            contents: bytemuck::cast_slice(&w),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        (column_indices_buffer, row_offsets_buffer, attacker_pos_buffer)
+        (column_indices_buffer, row_offsets_buffer, weights_buffer)
     }
 
     fn graph_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
@@ -339,7 +406,7 @@ impl<'a> GPURunner<'a> {
             entries: &[
                 bgl_entry(0, true), // graph column indices
                 bgl_entry(1, true), // graph row offsets
-                bgl_entry(2, true), // graph attacker pos
+                bgl_entry(2, true), // graph edge weights
             ],
         })
     }
@@ -350,15 +417,15 @@ impl<'a> GPURunner<'a> {
             label: Some("Input graph bind group"),
             layout,
             entries: &[
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupEntry { // graph column indices
                     binding: 0,
                     resource: buffers.0.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupEntry { // graph row offsets
                     binding: 1,
                     resource: buffers.1.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupEntry { // graph edge weights
                     binding: 2,
                     resource: buffers.2.as_entire_binding(),
                 },
@@ -366,6 +433,7 @@ impl<'a> GPURunner<'a> {
         })
     }
 
+    /*
     // Update the storage buffer, and resize that buffer if necessary, to accommodate new to_visit
     fn set_visit_list(&mut self) {
         // Resize the buffer if necessary to hold all nodes that need to be visited
@@ -398,7 +466,30 @@ impl<'a> GPURunner<'a> {
             // Schedule writing new visit list in buffer
             self.queue.write_buffer(&shader.visit_buf, 0, bytemuck::cast_slice(&shader.visit_list));
         }
+    }
+    */
 
+    fn memory_map(visit_list: &[u32], game: &EnergyGame) -> (Vec<u32>, Vec<u32>, Vec<Energy>) {
+        let mut energies = Vec::new();
+        let mut successor_offsets = Vec::new();
+        let mut node_offsets = Vec::new();
+        let mut count: u32 = 0;
+        for node in visit_list {
+            node_offsets.push(*node);
+            node_offsets.push(count);
+            for (successor_idx, successor) in game.graph.adj[*node as usize].iter().enumerate() {
+                //successor_offsets.push(count);
+                let successor_energies = &game.energies[*successor as usize];
+                energies.extend(successor_energies);
+                //TODO: Reevaluate this mechanism of repeating the successor index
+                successor_offsets.extend(iter::repeat(successor_idx as u32).take(successor_energies.len()));
+                count += successor_energies.len() as u32;
+            }
+        }
+        successor_offsets.push(count);
+        node_offsets.push(u32::MAX); // Last offset does not correspond to another starting node
+        node_offsets.push(count);
+        (node_offsets, successor_offsets, energies)
     }
 
     pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
@@ -406,68 +497,88 @@ impl<'a> GPURunner<'a> {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
-            for shader in [&self.def_shader, &self.atk_shader] {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
-                cpass.set_pipeline(&shader.pipeline);
-                cpass.set_bind_group(0, &shader.bind_group, &[]);
-                cpass.set_bind_group(1, &self.graph_bind_group, &[]);
+            for shader in [&self.atk_shader] { //TODO: add back &self.def_shader, 
+                {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
+                    cpass.set_pipeline(&shader.pipeline);
+                    cpass.set_bind_group(0, &shader.bind_group, &[]);
+                    cpass.set_bind_group(1, &self.graph_bind_group, &[]);
 
-                // Ceil( n_visit / WORKGROUP_SIZE )
-                let n_visit = shader.visit_list.len() as u32;
-                let workgroup_count = if n_visit % WORKGROUP_SIZE > 0 {
-                    n_visit / WORKGROUP_SIZE + 1
-                } else {
-                    n_visit / WORKGROUP_SIZE
-                };
-                cpass.dispatch_workgroups(workgroup_count, 1, 1);
+                    // Ceil( n_visit / WORKGROUP_SIZE )
+                    let n_energies = shader.energies.len() as u32;
+                    let workgroup_count = if n_energies % WORKGROUP_SIZE > 0 {
+                        n_energies / WORKGROUP_SIZE + 1
+                    } else {
+                        n_energies / WORKGROUP_SIZE
+                    };
+                    cpass.dispatch_workgroups(workgroup_count, 1, 1);
+                }
+                // Copy output to staging buffer
+                encoder.copy_buffer_to_buffer(&shader.minima_buf, 0, &shader.minima_staging_buf, 0, shader.minima_buf.size());
+                encoder.copy_buffer_to_buffer(&shader.energies_buf, 0, &shader.energies_staging_buf, 0, shader.energies_buf.size());
             }
 
-            // Copy output to staging buffer
-            encoder.copy_buffer_to_buffer(&self.output_buf, 0, &self.staging_buf, 0, self.output_buf.size());
             // Submit command encoder for processing by GPU
             self.queue.submit(Some(encoder.finish()));
 
-            let buffer_slice = self.staging_buf.slice(..);
-            let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
-            buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-
+            let minima_buffer_slice = self.atk_shader.minima_staging_buf.slice(..);  //TODO: Handle output of def_shader too
+            let energies_buffer_slice = self.atk_shader.energies_staging_buf.slice(..);
+            let (sender, receiver) = futures_intrusive::channel::shared::channel(2);
+            let sender2 = sender.clone();
+            minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+                sender.try_send(v).unwrap();
+            });
+            energies_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+                sender2.try_send(v).unwrap();
+            });
 
             self.def_shader.visit_list.clear();
             self.atk_shader.visit_list.clear();
             // Wait for the GPU to finish work
             self.device.poll(wgpu::Maintain::Wait);
 
-            if let Some(Ok(())) = receiver.receive().await {
-                let data = buffer_slice.get_mapped_range();
-                let output: Vec<u32> = bytemuck::cast_slice(&data).to_vec();
+            let r1 = receiver.receive().await;
+            let r2 = receiver.receive().await;
 
-                drop(data);
-                self.staging_buf.unmap();
+            if r1 != Some(Ok(())) || r2 != Some(Ok(())) {
+                return Err("Error while mapping buffers".to_string());
+            }
 
-                for (v, (new_step, prev_step)) in iter::zip(&output, &self.prev_output).enumerate() {
-                    if new_step < prev_step {
-                        // Distance was updated: Visit parent nodes next.
-                        for &w in &self.game.graph.reverse[v] {
-                            if self.game.graph.attacker_pos[w as usize] {
-                                self.atk_shader.visit_list.push(w);
-                            } else {
-                                self.def_shader.visit_list.push(w);
-                            }
+            let minima = minima_buffer_slice.get_mapped_range();
+            println!("{:?}", minima);
+            let energies_data = energies_buffer_slice.get_mapped_range();
+            let energies: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
+            println!("{:?}", energies);
+
+            drop(minima);
+            self.atk_shader.minima_staging_buf.unmap();
+            drop(energies_data);
+            self.atk_shader.energies_staging_buf.unmap(); //TODO: do def_shader too
+
+            /*
+            for (v, (new_step, prev_step)) in iter::zip(&output, &self.prev_output).enumerate() {
+                if new_step < prev_step {
+                    // Distance was updated: Visit parent nodes next.
+                    for &w in &self.game.graph.reverse[v] {
+                        if self.game.graph.attacker_pos[w as usize] {
+                            self.atk_shader.visit_list.push(w);
+                        } else {
+                            self.def_shader.visit_list.push(w);
                         }
                     }
                 }
-                if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
-                    // Nothing was updated, we are done.
-                    return Ok(output.into_iter()
-                        // High values mean no endpoint could be reached from this node
-                        .map(|n| if n >= INF { None } else { Some(n) })
-                        .collect())
-                }
-                self.set_visit_list();
-                self.prev_output = output;
-            } else {
-                return Err("Failed to run compute on gpu!".to_string())
             }
+            if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
+                // Nothing was updated, we are done.
+                return Ok(output.into_iter()
+                    // High values mean no endpoint could be reached from this node
+                    .map(|n| if n >= INF { None } else { Some(n) })
+                    .collect())
+            }
+            self.set_visit_list();
+            self.prev_output = output;
+            */
+            return Ok(Vec::new());
         }
     }
 }

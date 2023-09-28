@@ -6,10 +6,13 @@ var<storage, read_write> output: array<u32>;
 
 
 @group(1) @binding(0)
-var<storage> graph_c: array<u32>;
+var<storage> graph_column_indices: array<u32>;
 
 @group(1) @binding(1)
-var<storage> graph_r: array<u32>;
+var<storage> graph_row_offsets: array<u32>;
+
+@group(1) @binding(2)
+var<storage> graph_weights: array<u32>;
 
 
 // Process an attacker position
@@ -25,8 +28,8 @@ fn attack(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Pick minimal step count from next nodes
     var new_steps = output[v];
-    for (var j: u32 = graph_r[v]; j < graph_r[v + 1u]; j++) {
-        let w = graph_c[j];
+    for (var j: u32 = graph_row_offsets[v]; j < graph_row_offsets[v + 1u]; j++) {
+        let w = graph_column_indices[j];
         if output[w] + 1u < new_steps {
             new_steps = output[w] + 1u;
         }
@@ -50,8 +53,8 @@ fn defend(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Pick maximal step count from next nodes
     var new_steps = 0u;
-    for (var j: u32 = graph_r[v]; j < graph_r[v + 1u]; j++) {
-        let w = graph_c[j];
+    for (var j: u32 = graph_row_offsets[v]; j < graph_row_offsets[v + 1u]; j++) {
+        let w = graph_column_indices[j];
         if output[w] >= new_steps {
             new_steps = output[w] + 1u;
         }
