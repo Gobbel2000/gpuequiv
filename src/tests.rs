@@ -43,7 +43,6 @@ fn example_graph() -> GameGraph {
 async fn execute_reachability_small() {
     let mut game = EnergyGame::from_graph(example_graph());
     game.to_reach = vec![7, 15];
-    println!("{:#?}", game);
     let mut runner = game.get_gpu_runner().await;
     assert_eq!(runner.execute_gpu().await, Ok(vec![
         Some(3),

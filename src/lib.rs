@@ -59,6 +59,7 @@ impl GameGraph {
     }
 }
 
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct Energy {
     data: u32,
@@ -81,6 +82,11 @@ impl Energy {
         Energy { data: 0 }
     }
 }
+
+// Enable bytemucking for filling buffers
+unsafe impl bytemuck::Zeroable for Energy {}
+unsafe impl bytemuck::Pod for Energy {}
+
 
 #[derive(Debug, Clone)]
 pub struct EnergyGame {
@@ -117,11 +123,22 @@ impl EnergyGame {
 
 }
 
+#[repr(C)]  // Needed for safely implementing Pod
+#[derive(Clone, Copy, Debug)]
+struct NodeOffset {
+    node: u32,
+    offset: u32,
+}
+// Enable bytemucking for filling buffers
+unsafe impl bytemuck::Zeroable for NodeOffset {}
+unsafe impl bytemuck::Pod for NodeOffset {}
+
 struct ShaderObjects {
     visit_list: Vec<u32>,
     energies: Vec<Energy>,
     energies_buf: Buffer,
     energies_staging_buf: Buffer,
+    node_offsets: Vec<NodeOffset>,
     node_offsets_buf: Buffer,
     successor_offsets_buf: Buffer,
     minima_buf: Buffer,
@@ -144,8 +161,7 @@ impl ShaderObjects {
             .copied()
             .collect();
 
-        let (node_offsets, successor_offsets, energies) = GPURunner::memory_map(&visit_list, game);
-        println!("PPS: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
+        let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&visit_list, game);
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
@@ -163,7 +179,7 @@ impl ShaderObjects {
         } else {
             energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Energies storage buffer", player)),
-                contents: bytemuck::cast_slice(&energies.iter().map(|e| e.data).collect::<Vec<u32>>()),
+                contents: bytemuck::cast_slice(&energies),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             });
         }
@@ -237,6 +253,7 @@ impl ShaderObjects {
             energies,
             energies_buf,
             energies_staging_buf,
+            node_offsets,
             node_offsets_buf,
             successor_offsets_buf,
             minima_buf,
@@ -244,6 +261,112 @@ impl ShaderObjects {
             bind_group,
             pipeline,
         }
+    }
+
+    fn update(&mut self,
+        is_attack: bool,
+        device: &Device,
+        queue: &Queue,
+        game: &EnergyGame,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+        pipeline_layout: &wgpu::PipelineLayout,
+    ) {
+        let visit_list: Vec<u32> = game.to_reach.iter()
+            .filter(|&v| game.graph.attacker_pos[*v as usize] ^ !is_attack)
+            .copied()
+            .collect();
+
+        let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&visit_list, game);
+
+        let player = if is_attack { "Attack" } else { "Defense" };
+
+        self.energies = energies;
+        if self.energies.len() > self.energies_buf.size() as usize {
+            self.energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Energies storage buffer", player)),
+                contents: bytemuck::cast_slice(&self.energies),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            });
+            self.energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Energies staging buffer", player)),
+                size: self.energies_buf.size(),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        } else {
+            queue.write_buffer(&self.energies_buf, 0, bytemuck::cast_slice(&self.energies));
+        }
+
+        self.node_offsets = node_offsets;
+        if self.node_offsets.len() > self.node_offsets_buf.size() as usize {
+            self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Node offsets storage buffer", player)),
+                contents: bytemuck::cast_slice(&self.node_offsets),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        } else {
+            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
+        }
+
+        if successor_offsets.len() > self.successor_offsets_buf.size() as usize {
+            self.successor_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Successor offsets storage buffer", player)),
+                contents: bytemuck::cast_slice(&successor_offsets),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        } else {
+            queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
+        }
+
+        // Output flags are bit-packed with 32 bools per u32. Round up to next multiple of 64.
+        // minima_capacity is measured in number of u32's.
+        let minima_capacity = (((self.energies.len() as i64 - 1) / 64 + 1) * 2) as usize;
+        if minima_capacity < self.minima_buf.size() as usize {
+            self.minima_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Minimal energy flags storage buffer", player)),
+                size: (minima_capacity * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            // For reading minima_buf on the CPU
+            self.minima_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Minima output staging buffer", player)),
+                size: self.minima_buf.size(),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+
+        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("{} Main shader bind group", player)),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.energies_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.node_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.minima_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(&format!("{} Minima compute pipeline", player)),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "process_energies",
+        });
     }
 }
 
@@ -259,6 +382,8 @@ pub struct GPURunner<'a> {
     _graph_bufs: (Buffer, Buffer, Buffer),
     _graph_bind_group_layout: wgpu::BindGroupLayout,
     graph_bind_group: wgpu::BindGroup,
+    minima_shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
 
     atk_shader: ShaderObjects,
     def_shader: ShaderObjects,
@@ -326,6 +451,8 @@ impl<'a> GPURunner<'a> {
             _graph_bufs: graph_buffers,
             _graph_bind_group_layout: graph_bind_group_layout,
             graph_bind_group,
+            minima_shader,
+            pipeline_layout,
 
             atk_shader,
             def_shader,
@@ -470,14 +597,22 @@ impl<'a> GPURunner<'a> {
     }
     */
 
-    fn memory_map(visit_list: &[u32], game: &EnergyGame) -> (Vec<u32>, Vec<u32>, Vec<Energy>) {
+    fn prepare_buffers(&mut self) {
+        self.atk_shader.update(
+            true, &self.device, &self.queue, &self.game,
+            &self.energy_bind_group_layout, &self.minima_shader, &self.pipeline_layout);
+        self.atk_shader.update(
+            false, &self.device, &self.queue, &self.game,
+            &self.energy_bind_group_layout, &self.minima_shader, &self.pipeline_layout);
+    }
+
+    fn collect_data(visit_list: &[u32], game: &EnergyGame) -> (Vec<NodeOffset>, Vec<u32>, Vec<Energy>) {
         let mut energies = Vec::new();
         let mut successor_offsets = Vec::new();
         let mut node_offsets = Vec::new();
         let mut count: u32 = 0;
         for node in visit_list {
-            node_offsets.push(*node);
-            node_offsets.push(count);
+            node_offsets.push(NodeOffset { node: *node, offset: count });
             for (successor_idx, successor) in game.graph.adj[*node as usize].iter().enumerate() {
                 //successor_offsets.push(count);
                 let successor_energies = &game.energies[*successor as usize];
@@ -488,13 +623,14 @@ impl<'a> GPURunner<'a> {
             }
         }
         successor_offsets.push(count);
-        node_offsets.push(u32::MAX); // Last offset does not correspond to another starting node
-        node_offsets.push(count);
+        // Last offset does not correspond to another starting node, mark with u32::MAX
+        node_offsets.push(NodeOffset { node: u32::MAX, offset: count });
         (node_offsets, successor_offsets, energies)
     }
 
     pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
         loop {
+            println!("Visit list: {:?}", self.atk_shader.visit_list);
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
@@ -533,6 +669,7 @@ impl<'a> GPURunner<'a> {
                 sender2.try_send(v).unwrap();
             });
 
+            // Reset visit lists
             self.def_shader.visit_list.clear();
             self.atk_shader.visit_list.clear();
             // Wait for the GPU to finish work
@@ -546,40 +683,74 @@ impl<'a> GPURunner<'a> {
             }
 
             let minima = minima_buffer_slice.get_mapped_range();
-            let minima_bools: Vec<u8> = bytemuck::cast_slice(&minima).to_vec();
+            let minima_bools: Vec<u64> = bytemuck::cast_slice(&minima).to_vec();
             println!("Minima: {:?}", minima_bools);
             let energies_data = energies_buffer_slice.get_mapped_range();
             let energies: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
             println!("Energies: {:?}", energies);
+
+            const MINIMA_SIZE: u32 = 8;
+
+            for node_window in self.atk_shader.node_offsets.windows(2) {
+                let cur = node_window[0];
+                let next_offset = node_window[1].offset;
+                let width = next_offset - cur.offset;
+                let n_prev = self.game.energies[cur.node as usize].len() as u32;
+                let n_new = width - n_prev;
+                assert!(n_prev <= width);
+
+                let mut changed = false;
+                // If energies didn't change, all newly compared energies will be filtered out
+                for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
+                    // What position in the minima u64 the node starts at
+                    let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
+                    // ... and ends at
+                    let shift_end = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
+
+                    let minima_chunk = minima_bools[minima_idx as usize];
+                    if minima_chunk & mask != 0 {
+                        changed = true;
+                    }
+                }
+                // The previous energies at the end are all still present.
+                //TODO: Rethink if this check is still needed.
+                if !changed {
+                    for minima_idx in ((cur.offset + n_new) / MINIMA_SIZE) ..= ((next_offset - 1) / MINIMA_SIZE) {
+                        let shift_start = (cur.offset + n_new).max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
+                        let shift_end = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                        let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
+
+                        let minima_chunk = minima_bools[minima_idx as usize];
+                        if minima_chunk | !mask != u64::MAX {
+                            changed = true;
+                        }
+                    }
+                }
+
+                if changed {
+                    // Winning budgets have improved, check predecessors in next iteration
+                    for &pre in &self.game.graph.reverse[cur.node as usize] {
+                        if self.game.graph.attacker_pos[pre as usize] {
+                            self.atk_shader.visit_list.push(pre);
+                        } else {
+                            self.def_shader.visit_list.push(pre);
+                        }
+                    }
+                }
+            }
 
             drop(minima);
             self.atk_shader.minima_staging_buf.unmap();
             drop(energies_data);
             self.atk_shader.energies_staging_buf.unmap(); //TODO: do def_shader too
 
-            /*
-            for (v, (new_step, prev_step)) in iter::zip(&output, &self.prev_output).enumerate() {
-                if new_step < prev_step {
-                    // Distance was updated: Visit parent nodes next.
-                    for &w in &self.game.graph.reverse[v] {
-                        if self.game.graph.attacker_pos[w as usize] {
-                            self.atk_shader.visit_list.push(w);
-                        } else {
-                            self.def_shader.visit_list.push(w);
-                        }
-                    }
-                }
-            }
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
-                return Ok(output.into_iter()
-                    // High values mean no endpoint could be reached from this node
-                    .map(|n| if n >= INF { None } else { Some(n) })
-                    .collect())
+                return Ok(Vec::new()); //TODO: Return value
             }
-            self.set_visit_list();
-            self.prev_output = output;
-            */
+
+            self.prepare_buffers();
             return Ok(Vec::new());
         }
     }

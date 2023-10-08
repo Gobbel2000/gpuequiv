@@ -1,11 +1,6 @@
 use gpuequiv::*;
 
 fn example_graph() -> GameGraph {
-    /*
-    let attacker_pos: Vec<bool> = (0..18)
-        .map(|i| [0, 2, 4, 6, 9, 11, 12, 14, 17].contains(&i))
-        .collect();
-        */
     let attacker_pos = vec![true; 18];
     GameGraph::new(
         18,
@@ -42,7 +37,7 @@ async fn execute_reachability_small() {
         to_reach: vec![6, 15],
     };
     game.energies[7] = vec![0x1.into(), 0x3.into(), 0x30.into()];
-    println!("{:#?}", game);
+    //println!("{:#?}", game);
     let mut runner = game.get_gpu_runner().await;
     runner.execute_gpu().await.unwrap();
 }

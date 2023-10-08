@@ -2,7 +2,7 @@
 var<storage, read_write> energies: array<u32>;
 
 @group(0) @binding(1)
-var<storage> node_offsets: array<vec2<u32>>;
+var<storage> node_offsets: array<NodeOffset>;
 
 @group(0) @binding(2)
 var<storage> successor_offsets: array<u32>;
@@ -20,6 +20,10 @@ var<storage> graph_row_offsets: array<u32>;
 @group(1) @binding(2)
 var<storage> graph_weights: array<u32>;
 
+struct NodeOffset {
+    node: u32,
+    offset: u32,
+}
 
 // Temporary buffer to hold the output flags as u32. This is later condensed
 // into bit-packed u32's in the minima storage buffer.
@@ -122,7 +126,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
           @builtin(local_invocation_index) l_idx: u32) {
     let i = g_id.x;
     let n_nodes = arrayLength(&node_offsets);
-    if i >= node_offsets[n_nodes - 1u].y {
+    if i >= node_offsets[n_nodes - 1u].offset {
         return;
     }
 
@@ -133,15 +137,15 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
         let search_offset = wg_node_offset + l_idx * stride_width;
         let search_max = min(search_offset + stride_width, n_nodes);
         if (search_offset <= search_max
-            && node_offsets[search_offset].y <= l_idx
-            && l_idx < node_offsets[search_max].y)
+            && node_offsets[search_offset].offset <= l_idx
+            && l_idx < node_offsets[search_max].offset)
         {
             wg_node_offset = search_offset;
         }
     }
     var start_node_idx = 0u;
     for (var node_idx = wg_node_offset; true; node_idx++) {
-        if node_offsets[node_idx].y <= l_idx && l_idx < node_offsets[node_idx + 1u].y {
+        if node_offsets[node_idx].offset <= l_idx && l_idx < node_offsets[node_idx + 1u].offset {
             start_node_idx = node_idx;
             break;
         }
@@ -152,7 +156,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     // successor_offsets holds the successor indices from each node's adjacency
     // list.
     let end_node = successor_offsets[i];
-    let start_node = node_offsets[start_node_idx].x;
+    let start_node = node_offsets[start_node_idx].node;
 
     // Update energies
     let update = graph_weights[graph_row_offsets[start_node] + end_node];
@@ -166,13 +170,13 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     let packing_offset = l_idx & 0x1fu; // zero everything but last 5 bits, l_idx % 32
     var is_minimal = 1u << packing_offset;
 
-    let e_start = node_offsets[start_node_idx].y;
-    let e_end = node_offsets[start_node_idx + 1u].y; // exclusive
+    let e_start = node_offsets[start_node_idx].offset;
+    let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
     let e_idx = i - e_start; // Index within chunk of energies to compare
     for (var j: u32 = e_start; j < e_end - 1u; j++) {
         let e2 = energies[j];
         // Skip reflexive comparisons,
-        // When energies are equal, keep only those with lower index
+        // When energies are equal, keep only those with higher index
         if j != e_idx && ((e2 == updated && e_idx < j) ||
                           (e2 != updated && less_eq(e2, updated))) {
             // Mark to be filtered out
