@@ -42,39 +42,77 @@ fn less_eq(a: u32, b: u32) -> bool {
 
 // Apply the update to e backwards
 fn inv_update(e: u32, upd: u32) -> u32 {
+    /*
+    if upd == 0u {
+        return e;
+    }
+    */
     // Expand bit fields into full u32's
-    var energies = array<vec4<u32>,2u>(
+    var energy = array<vec4<u32>,2u>(
         (vec4(e) >> vec4(0u, 2u, 4u, 6u)) & vec4(0x3u),
         (vec4(e) >> vec4(8u, 10u, 12u, 14u)) & vec4(0x3u),
     );
 
-    var updates = array<vec4<u32>,2u>(
+    let updates = array<vec4<u32>,2u>(
         (vec4(upd) >> vec4(0u, 4u, 8u, 12u)) & vec4(0xfu),
         (vec4(upd) >> vec4(16u, 20u, 24u, 28u)) & vec4(0xfu),
     );
 
     // Apply 1u-updates first
-    energies[0u] += vec4<u32>(updates[0u] == 1u); // 1 encodes 1-update
-    energies[1u] += vec4<u32>(updates[1u] == 1u);
+    energy[0u] += vec4<u32>(updates[0u] == 1u); // 1 encodes 1-update
+    energy[1u] += vec4<u32>(updates[1u] == 1u);
 
     // Look for min-updates
-    //TODO: Unroll loop
+    // 0u means no update, 1 means 1-update, everything else represents
+    // the second component in the min-operation, the first being the
+    // current position i. To make place for the 2 special values, 2
+    // must be subtracted here.
+    /*
     for (var i: u32 = 0u; i < 6u; i++) {
         var u = updates[i >> 2u][i & 0x3u];
         if u > 1u {
-            // 0u means no update, 1 means 1-update, everything else represents
-            // the second component in the min-operation, the first being the
-            // current position i. To make place for the 2 special values, 2
-            // must be subtracted here.
             u -= 2u;
-            energies[u >> 2u][u & 0x3u] = max(energies[u >> 2u][u & 0x3u],
-                                              energies[i >> 2u][i & 0x3u]);
+            energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u],
+                                            energy[i >> 2u][i & 0x3u]);
         }
     }
+    */
 
-    energies[0u] = max(energies[0u], vec4(3u)) << vec4(0u, 2u, 4u, 6u) |
-                   max(energies[1u], vec4(3u)) << vec4(8u, 10u, 12u, 16u);
-    return energies[0u].x | energies[0u].y | energies[0u].z | energies[0u].w;
+    // Unrolled loop
+    var u = updates[0][0];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][0]);
+    }
+    u = updates[0][1];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][1]);
+    }
+    u = updates[0][2];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][2]);
+    }
+    u = updates[0][3];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][3]);
+    }
+    u = updates[1][0];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[1][0]);
+    }
+    u = updates[1][1];
+    if u > 1u {
+        u -= 2u;
+        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[1][1]);
+    }
+
+    energy[0u] = min(energy[0u], vec4(3u)) << vec4(0u, 2u, 4u, 6u) |
+                 min(energy[1u], vec4(3u)) << vec4(8u, 10u, 12u, 16u);
+    return energy[0u].x | energy[0u].y | energy[0u].z | energy[0u].w;
 }
 
 

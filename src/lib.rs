@@ -145,6 +145,7 @@ impl ShaderObjects {
             .collect();
 
         let (node_offsets, successor_offsets, energies) = GPURunner::memory_map(&visit_list, game);
+        println!("PPS: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
@@ -545,10 +546,11 @@ impl<'a> GPURunner<'a> {
             }
 
             let minima = minima_buffer_slice.get_mapped_range();
-            println!("{:?}", minima);
+            let minima_bools: Vec<u8> = bytemuck::cast_slice(&minima).to_vec();
+            println!("Minima: {:?}", minima_bools);
             let energies_data = energies_buffer_slice.get_mapped_range();
             let energies: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
-            println!("{:?}", energies);
+            println!("Energies: {:?}", energies);
 
             drop(minima);
             self.atk_shader.minima_staging_buf.unmap();
