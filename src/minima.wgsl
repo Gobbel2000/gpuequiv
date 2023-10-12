@@ -31,15 +31,15 @@ var<workgroup> minima_buf: array<u32,64u>;
 var<workgroup> wg_node_offset: u32;
 
 fn less_eq(a: u32, b: u32) -> bool {
-    return !((a & 0x3u) > (b & 0x3u)
-        || (a & 0xcu) > (b & 0xcu)
-        || (a & 0x30u) > (b & 0x30u)
-        || (a & 0xc0u) > (b & 0xc0u)
-        || (a & 0x300u) > (b & 0x300u)
-        || (a & 0xc00u) > (b & 0xc00u)
+    return ((a & 0x3u) <= (b & 0x3u)
+        && (a & 0xcu) <= (b & 0xcu)
+        && (a & 0x30u) <= (b & 0x30u)
+        && (a & 0xc0u) <= (b & 0xc0u)
+        && (a & 0x300u) <= (b & 0x300u)
+        && (a & 0xc00u) <= (b & 0xc00u)
         /* for 8-tuple energies
-        || (a & 0x3000u) > (b & 0x3000u)
-        || (a & 0xc000u) > (b & 0xc000u)
+        && (a & 0x3000u) <= (b & 0x3000u)
+        && (a & 0xc000u) <= (b & 0xc000u)
         */
     );
 }
@@ -173,7 +173,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     let e_start = node_offsets[start_node_idx].offset;
     let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
     let e_idx = i - e_start; // Index within chunk of energies to compare
-    for (var j: u32 = e_start; j < e_end - 1u; j++) {
+    for (var j: u32 = e_start; j < e_end; j++) {
         let e2 = energies[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index

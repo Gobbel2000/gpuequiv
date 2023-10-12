@@ -1,8 +1,12 @@
+mod types;
+
 use std::borrow::Cow;
 use std::iter;
 
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
+
+pub use crate::types::{Energy, Update, Upd};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
@@ -13,12 +17,12 @@ pub struct GameGraph {
     pub n_vertices: u32,
     pub adj: Vec<Vec<u32>>,
     pub reverse: Vec<Vec<u32>>,
-    pub weights: Vec<Vec<Energy>>,
+    pub weights: Vec<Vec<Update>>,
     pub attacker_pos: Vec<bool>,
 }
 
 impl GameGraph {
-    pub fn new(n_vertices: u32, edges: &[(u32, u32, Energy)], attacker_pos: &[bool]) -> Self {
+    pub fn new(n_vertices: u32, edges: &[(u32, u32, Update)], attacker_pos: &[bool]) -> Self {
         let mut adj = vec![vec![]; n_vertices as usize];
         let mut reverse = vec![vec![]; n_vertices as usize];
         let mut weights = vec![vec![]; n_vertices as usize];
@@ -45,7 +49,7 @@ impl GameGraph {
         let weights = self.weights.iter()
             .flatten()
             .copied()
-            .map(|e| e.data)
+            .map(|e| e.0)
             .collect();
         // Cumulative sum of all list lengths. 0 is prepended manually
         let row_offsets = iter::once(0).chain(
@@ -58,34 +62,6 @@ impl GameGraph {
         (column_indices, row_offsets, weights)
     }
 }
-
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
-pub struct Energy {
-    data: u32,
-}
-
-impl From<u32> for Energy {
-    fn from(data: u32) -> Self {
-        Energy { data }
-    }
-}
-
-impl Default for Energy {
-    fn default() -> Self {
-        Energy::zero()
-    }
-}
-
-impl Energy {
-    fn zero() -> Self {
-        Energy { data: 0 }
-    }
-}
-
-// Enable bytemucking for filling buffers
-unsafe impl bytemuck::Zeroable for Energy {}
-unsafe impl bytemuck::Pod for Energy {}
 
 
 #[derive(Debug, Clone)]
@@ -162,6 +138,7 @@ impl ShaderObjects {
             .collect();
 
         let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&visit_list, game);
+        println!("{:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
@@ -684,9 +661,14 @@ impl<'a> GPURunner<'a> {
 
             let minima = minima_buffer_slice.get_mapped_range();
             let minima_bools: Vec<u64> = bytemuck::cast_slice(&minima).to_vec();
-            println!("Minima: {:?}", minima_bools);
+            print!("Minima:    ");
+            for minima_chunk in &minima_bools {
+                print!("{:064b} ", minima_chunk.reverse_bits());
+            }
+            println!("");
+            //println!("Minima: {:?}", minima_bools);
             let energies_data = energies_buffer_slice.get_mapped_range();
-            let energies: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
+            let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
             println!("Energies: {:?}", energies);
 
             const MINIMA_SIZE: u32 = 8;
