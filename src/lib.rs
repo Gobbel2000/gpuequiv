@@ -142,24 +142,23 @@ impl ShaderObjects {
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
-        let energies_buf;
-        if energies.is_empty() {
+        const INITIAL_CAPACITY: usize = 64;
+        let energies_buf = if energies.is_empty() {
             // Initialize 0-filled buffers with some initial size.
             // Buffers with size 0 are not allowed.
-            const INITIAL_ENERGIES_CAPACITY: usize = 64;
-            energies_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&format!("{} Energies storage buffer", player)),
-                size: (INITIAL_ENERGIES_CAPACITY * std::mem::size_of::<u32>()) as u64,
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Energies storage buffer empty", player)),
+                size: (INITIAL_CAPACITY * std::mem::size_of::<u32>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
-            });
+            })
         } else {
-            energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Energies storage buffer", player)),
                 contents: bytemuck::cast_slice(&energies),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            });
-        }
+            })
+        };
         let energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&format!("{} Energies staging buffer", player)),
             size: energies_buf.size(),
@@ -172,11 +171,23 @@ impl ShaderObjects {
             contents: bytemuck::cast_slice(&node_offsets),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-        let successor_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{} Successor offsets storage buffer", player)),
-            contents: bytemuck::cast_slice(&successor_offsets),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+
+        let successor_offsets_buf = if successor_offsets.is_empty() {
+            // Initialize 0-filled buffers with some initial size.
+            // Buffers with size 0 are not allowed.
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("{} Successor offsets storage buffer empty", player)),
+                size: (INITIAL_CAPACITY * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        } else {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Successor offsets storage buffer", player)),
+                contents: bytemuck::cast_slice(&successor_offsets),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
+        };
         // Output flags are bit-packed with 32 bools per u32. Round up to next multiple of 64.
         // minima_capacity is measured in number of u32's.
         let minima_capacity = (((energies.len() as i64 - 1) / 64 + 1) * 2) as usize;
@@ -591,7 +602,6 @@ impl<'a> GPURunner<'a> {
         for node in visit_list {
             node_offsets.push(NodeOffset { node: *node, offset: count });
             for (successor_idx, successor) in game.graph.adj[*node as usize].iter().enumerate() {
-                //successor_offsets.push(count);
                 let successor_energies = &game.energies[*successor as usize];
                 energies.extend(successor_energies);
                 //TODO: Reevaluate this mechanism of repeating the successor index
@@ -599,7 +609,6 @@ impl<'a> GPURunner<'a> {
                 count += successor_energies.len() as u32;
             }
         }
-        successor_offsets.push(count);
         // Last offset does not correspond to another starting node, mark with u32::MAX
         node_offsets.push(NodeOffset { node: u32::MAX, offset: count });
         (node_offsets, successor_offsets, energies)
