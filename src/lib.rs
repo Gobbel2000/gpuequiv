@@ -10,7 +10,7 @@ pub use crate::types::{Energy, Update, Upd};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
-const INF: u32 = 1 << 31;
+//const INF: u32 = 1 << 31;
 
 #[derive(Debug, Clone)]
 pub struct GameGraph {
@@ -363,7 +363,6 @@ pub struct GPURunner<'a> {
     game: &'a mut EnergyGame,
     device: Device,
     queue: Queue,
-    prev_output: Vec<u32>,
 
     energy_bind_group_layout: wgpu::BindGroupLayout,
 
@@ -382,37 +381,12 @@ impl<'a> GPURunner<'a> {
     pub async fn with_game(game: &'a mut EnergyGame) -> GPURunner<'a> {
         let (device, queue) = Self::get_device().await;
 
-        let prev_output = vec![INF; game.graph.n_vertices as usize];
-        /*
-        let output_size = (game.graph.n_vertices as usize * std::mem::size_of::<u32>()) as u64;
-        // Output buffer that holds the number of steps for each node required to reach a wanted end point
-        let output_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Shader output buffer"),
-            contents: bytemuck::cast_slice(&prev_output),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
-        // Staging buffer for mapping the output buffer back to CPU memory for reading
-        let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Shader output staging buffer"),
-            size: output_size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        */
-
         let energy_bind_group_layout = Self::energy_bind_group_layout(&device);
 
         let graph_buffers = Self::graph_buffers(&game.graph, &device);
         let graph_bind_group_layout = Self::graph_bind_group_layout(&device);
         let graph_bind_group = Self::graph_bind_group(&graph_bind_group_layout, &device, &graph_buffers);
 
-        /*
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Compute shader module"),
-            // Shader source embedded in binary
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
-        });
-        */
         let minima_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Minima shader module"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("minima.wgsl"))),
@@ -434,7 +408,6 @@ impl<'a> GPURunner<'a> {
             device,
             queue,
 
-            prev_output,
             energy_bind_group_layout,
             _graph_bufs: graph_buffers,
             _graph_bind_group_layout: graph_bind_group_layout,
@@ -468,18 +441,6 @@ impl<'a> GPURunner<'a> {
             .await
             .expect("Could not get device")
     }
-
-    /*
-    fn main_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Main bind group layout"),
-            entries: &[
-                bgl_entry(0, true), // visit_buffer
-                bgl_entry(1, false), // output_buffer
-            ],
-        })
-    }
-    */
 
     fn energy_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -548,42 +509,6 @@ impl<'a> GPURunner<'a> {
             ],
         })
     }
-
-    /*
-    // Update the storage buffer, and resize that buffer if necessary, to accommodate new to_visit
-    fn set_visit_list(&mut self) {
-        // Resize the buffer if necessary to hold all nodes that need to be visited
-        for shader in [&mut self.def_shader, &mut self.atk_shader] {
-            if shader.visit_capacity < shader.visit_list.len() {
-                shader.visit_capacity = shader.visit_list.len();
-                shader.visit_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("List of nodes to visit storage buffer"),
-                    size: (shader.visit_capacity * std::mem::size_of::<u32>()) as u64,
-                    usage: wgpu::BufferUsages::STORAGE
-                        | wgpu::BufferUsages::COPY_SRC
-                        | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                shader.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Main bind group"),
-                    layout: &self.main_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: shader.visit_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.output_buf.as_entire_binding(),
-                        },
-                    ],
-                });
-            }
-            // Schedule writing new visit list in buffer
-            self.queue.write_buffer(&shader.visit_buf, 0, bytemuck::cast_slice(&shader.visit_list));
-        }
-    }
-    */
 
     fn prepare_buffers(&mut self) {
         self.atk_shader.update(
