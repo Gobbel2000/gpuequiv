@@ -133,7 +133,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     // Gather graph start and end node corresponding to current energy
     let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
     for (var stride = len_log64; stride > 0u; stride--) {
-        let stride_width = 1u << stride * 6u; // l_idx * 64**stride
+        let stride_width = 1u << stride * 6u; // 64**stride
         let search_offset = wg_node_offset + l_idx * stride_width;
         let search_max = min(search_offset + stride_width, n_nodes);
         if (search_offset <= search_max
@@ -144,7 +144,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
         }
     }
     var start_node_idx = 0u;
-    for (var node_idx = wg_node_offset; true; node_idx++) {
+    for (var node_idx = wg_node_offset; node_idx < wg_node_offset + 64u; node_idx++) {
         if node_offsets[node_idx].offset <= l_idx && l_idx < node_offsets[node_idx + 1u].offset {
             start_node_idx = node_idx;
             break;
@@ -159,7 +159,10 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     let start_node = node_offsets[start_node_idx].node;
 
     // Update energies
-    let update = graph_weights[graph_row_offsets[start_node] + end_node];
+    var update = 0u;
+    if end_node != u32(-1i) { // -1 (all 1's in binary) means the energy is from the current node, no update should apply
+        update = graph_weights[graph_row_offsets[start_node] + end_node];
+    }
 
     let updated = inv_update(energies[i], update);
     energies[i] = updated;
@@ -172,12 +175,11 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
 
     let e_start = node_offsets[start_node_idx].offset;
     let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
-    let e_idx = i - e_start; // Index within chunk of energies to compare
     for (var j: u32 = e_start; j < e_end; j++) {
         let e2 = energies[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
-        if j != e_idx && ((e2 == updated && e_idx < j) ||
+        if j != i && ((e2 == updated && i < j) ||
                           (e2 != updated && less_eq(e2, updated))) {
             // Mark to be filtered out
             is_minimal = 0u;

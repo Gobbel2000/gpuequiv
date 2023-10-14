@@ -78,6 +78,14 @@ impl EnergyGame {
         EnergyGame { graph, energies, to_reach: vec![] }
     }
 
+    pub fn with_reach(mut self, to_reach: Vec<u32>) -> Self {
+        for v in &to_reach {
+            self.energies[*v as usize].push(Energy::zero());
+        }
+        self.to_reach = to_reach;
+        self
+    }
+
     pub async fn get_gpu_runner(&mut self) -> GPURunner {
         GPURunner::with_game(self).await
     }
@@ -132,13 +140,15 @@ impl ShaderObjects {
         shader: &wgpu::ShaderModule,
         pipeline_layout: &wgpu::PipelineLayout,
     ) -> ShaderObjects {
-        let visit_list: Vec<u32> = game.to_reach.iter()
-            .filter(|&v| game.graph.attacker_pos[*v as usize] ^ !is_attack)
-            .copied()
-            .collect();
+        let mut visit_list: Vec<u32> = Vec::new();
+        for &v in &game.to_reach {
+            if game.graph.attacker_pos[v as usize] ^ !is_attack {
+                // Start with parent nodes of final points
+                visit_list.extend(&game.graph.reverse[v as usize]);
+            }
+        }
 
         let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&visit_list, game);
-        println!("{:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
@@ -260,17 +270,13 @@ impl ShaderObjects {
         shader: &wgpu::ShaderModule,
         pipeline_layout: &wgpu::PipelineLayout,
     ) {
-        let visit_list: Vec<u32> = game.to_reach.iter()
-            .filter(|&v| game.graph.attacker_pos[*v as usize] ^ !is_attack)
-            .copied()
-            .collect();
-
-        let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&visit_list, game);
+        let (node_offsets, successor_offsets, energies) = GPURunner::collect_data(&self.visit_list, game);
 
         let player = if is_attack { "Attack" } else { "Defense" };
 
         self.energies = energies;
-        if self.energies.len() > self.energies_buf.size() as usize {
+        // Make sure the energies buffer always has exactly the right size
+        if self.energies.len() * 4 != self.energies_buf.size() as usize {
             self.energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Energies storage buffer", player)),
                 contents: bytemuck::cast_slice(&self.energies),
@@ -287,7 +293,7 @@ impl ShaderObjects {
         }
 
         self.node_offsets = node_offsets;
-        if self.node_offsets.len() > self.node_offsets_buf.size() as usize {
+        if !buffer_fits(&self.node_offsets, &self.node_offsets_buf) {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Node offsets storage buffer", player)),
                 contents: bytemuck::cast_slice(&self.node_offsets),
@@ -297,7 +303,7 @@ impl ShaderObjects {
             queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
         }
 
-        if successor_offsets.len() > self.successor_offsets_buf.size() as usize {
+        if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
             self.successor_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Successor offsets storage buffer", player)),
                 contents: bytemuck::cast_slice(&successor_offsets),
@@ -310,7 +316,7 @@ impl ShaderObjects {
         // Output flags are bit-packed with 32 bools per u32. Round up to next multiple of 64.
         // minima_capacity is measured in number of u32's.
         let minima_capacity = (((self.energies.len() as i64 - 1) / 64 + 1) * 2) as usize;
-        if minima_capacity < self.minima_buf.size() as usize {
+        if minima_capacity * std::mem::size_of::<u32>() < self.minima_buf.size() as usize {
             self.minima_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Minimal energy flags storage buffer", player)),
                 size: (minima_capacity * std::mem::size_of::<u32>()) as u64,
@@ -514,9 +520,11 @@ impl<'a> GPURunner<'a> {
         self.atk_shader.update(
             true, &self.device, &self.queue, &self.game,
             &self.energy_bind_group_layout, &self.minima_shader, &self.pipeline_layout);
-        self.atk_shader.update(
+        /*
+        self.def_shader.update(
             false, &self.device, &self.queue, &self.game,
             &self.energy_bind_group_layout, &self.minima_shader, &self.pipeline_layout);
+            */
     }
 
     fn collect_data(visit_list: &[u32], game: &EnergyGame) -> (Vec<NodeOffset>, Vec<u32>, Vec<Energy>) {
@@ -531,17 +539,24 @@ impl<'a> GPURunner<'a> {
                 energies.extend(successor_energies);
                 //TODO: Reevaluate this mechanism of repeating the successor index
                 successor_offsets.extend(iter::repeat(successor_idx as u32).take(successor_energies.len()));
-                count += successor_energies.len() as u32;
+                //TODO: Report error on overflow instead of panicking
+                count = count.checked_add(successor_energies.len() as u32).unwrap();
             }
+            // ONLY FOR ATTACK: Add energies of current node at the end
+            let own_energies = &game.energies[*node as usize];
+            energies.extend(own_energies);
+            successor_offsets.extend(iter::repeat(u32::MAX).take(own_energies.len()));
+            count = count.checked_add(own_energies.len() as u32).unwrap();
         }
         // Last offset does not correspond to another starting node, mark with u32::MAX
         node_offsets.push(NodeOffset { node: u32::MAX, offset: count });
+        println!("{:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
         (node_offsets, successor_offsets, energies)
     }
 
     pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
+        println!("Visit list: {:?}", self.atk_shader.visit_list);
         loop {
-            println!("Visit list: {:?}", self.atk_shader.visit_list);
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
@@ -605,7 +620,7 @@ impl<'a> GPURunner<'a> {
             let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
             println!("Energies: {:?}", energies);
 
-            const MINIMA_SIZE: u32 = 8;
+            const MINIMA_SIZE: u32 = 64;
 
             for node_window in self.atk_shader.node_offsets.windows(2) {
                 let cur = node_window[0];
@@ -617,34 +632,50 @@ impl<'a> GPURunner<'a> {
 
                 let mut changed = false;
                 // If energies didn't change, all newly compared energies will be filtered out
-                for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
-                    // What position in the minima u64 the node starts at
-                    let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                    // ... and ends at
-                    let shift_end = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
-                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
+                if n_new > 0 {
+                    for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
+                        // What position in the minima u64 the node starts at
+                        let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
+                        // ... and ends at
+                        let pad_right = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                        let shift_end = MINIMA_SIZE - 1 - pad_right;
+                        let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
 
-                    let minima_chunk = minima_bools[minima_idx as usize];
-                    if minima_chunk & mask != 0 {
-                        changed = true;
+                        let minima_chunk = minima_bools[minima_idx as usize];
+                        if minima_chunk & mask != 0 {
+                            changed = true;
+                            break;
+                        }
                     }
                 }
                 // The previous energies at the end are all still present.
                 //TODO: Rethink if this check is still needed.
-                if !changed {
+                if !changed && n_prev > 0 {
                     for minima_idx in ((cur.offset + n_new) / MINIMA_SIZE) ..= ((next_offset - 1) / MINIMA_SIZE) {
                         let shift_start = (cur.offset + n_new).max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                        let shift_end = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                        let pad_right = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                        let shift_end = MINIMA_SIZE - 1 - pad_right;
                         let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
 
                         let minima_chunk = minima_bools[minima_idx as usize];
                         if minima_chunk | !mask != u64::MAX {
                             changed = true;
+                            break;
                         }
                     }
                 }
 
                 if changed {
+                    // Write new, filtered energies
+                    self.game.energies[cur.node as usize] = energies.iter()
+                        .enumerate()
+                        .take(next_offset as usize)
+                        .skip(cur.offset as usize)
+                        // Read the corresponding minima flag
+                        .filter(|(i, _)| minima_bools[i / 64] & (1 << i % 64) > 0)
+                        .map(|(_, e)| *e)
+                        .collect();
+
                     // Winning budgets have improved, check predecessors in next iteration
                     for &pre in &self.game.graph.reverse[cur.node as usize] {
                         if self.game.graph.attacker_pos[pre as usize] {
@@ -655,6 +686,7 @@ impl<'a> GPURunner<'a> {
                     }
                 }
             }
+            println!("Visit list: {:?}", self.atk_shader.visit_list);
 
             drop(minima);
             self.atk_shader.minima_staging_buf.unmap();
@@ -667,7 +699,7 @@ impl<'a> GPURunner<'a> {
             }
 
             self.prepare_buffers();
-            return Ok(Vec::new());
+            //return Ok(Vec::new());
         }
     }
 }
@@ -685,6 +717,11 @@ fn bgl_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
+}
+
+// Return true if buf is large enough to contain vec
+fn buffer_fits<T>(vec: &Vec<T>, buf: &Buffer) -> bool {
+    vec.len() * std::mem::size_of::<T>() <= buf.size() as usize
 }
 
 
