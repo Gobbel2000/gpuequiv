@@ -180,7 +180,7 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
         if j != i && ((e2 == updated && i < j) ||
-                          (e2 != updated && less_eq(e2, updated))) {
+                      (e2 != updated && less_eq(e2, updated))) {
             // Mark to be filtered out
             is_minimal = 0u;
             break;
@@ -202,6 +202,6 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
 
     // The first thread in both 32-blocks writes the packed u32 out
     if packing_offset == 0u {
-        minima[g_id.x >> 5u] = minima_buf[l_idx];
+        minima[i >> 5u] = minima_buf[l_idx];
     }
 }

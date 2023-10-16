@@ -39,7 +39,7 @@ async fn execute_reachability_small() {
     };
     */
     let mut game = EnergyGame::from_graph(example_graph())
-        .with_reach(vec![6, 15]);
+        .with_reach(vec![7, 15]);
     /*
     game.energies[7] = vec![
         energy![],
@@ -57,6 +57,7 @@ async fn execute_reachability_small() {
     //println!("{:#?}", game);
     let mut runner = game.get_gpu_runner().await;
     runner.execute_gpu().await.unwrap();
+    println!("{:#?}", game.energies);
 }
 
 fn main() {

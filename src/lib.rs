@@ -10,7 +10,6 @@ pub use crate::types::{Energy, Update, Upd};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
-//const INF: u32 = 1 << 31;
 
 #[derive(Debug, Clone)]
 pub struct GameGraph {
@@ -90,21 +89,10 @@ impl EnergyGame {
         GPURunner::with_game(self).await
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self) -> Result<(), String> {
         let mut runner = self.get_gpu_runner().await;
-        let n_steps = runner.execute_gpu().await.unwrap();
-
-        // Pretty-print output
-        let mut out = String::new();
-        for (i, step) in n_steps.iter().enumerate() {
-            match step {
-                Some(n) => out += &format!("\n{}:\t{}", i, n),
-                None => out += &format!("\n{}:\t{}", i, '-'),
-            }
-        }
-        log::warn!("{}", out);
+        runner.execute_gpu().await
     }
-
 }
 
 #[repr(C)]  // Needed for safely implementing Pod
@@ -275,8 +263,7 @@ impl ShaderObjects {
         let player = if is_attack { "Attack" } else { "Defense" };
 
         self.energies = energies;
-        // Make sure the energies buffer always has exactly the right size
-        if self.energies.len() * 4 != self.energies_buf.size() as usize {
+        if !buffer_fits(&self.energies, &self.energies_buf) {
             self.energies_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Energies storage buffer", player)),
                 contents: bytemuck::cast_slice(&self.energies),
@@ -293,7 +280,8 @@ impl ShaderObjects {
         }
 
         self.node_offsets = node_offsets;
-        if !buffer_fits(&self.node_offsets, &self.node_offsets_buf) {
+        // Make sure the node offsets buffer always has exactly the right size
+        if self.node_offsets.len() * std::mem::size_of::<NodeOffset>() != self.node_offsets_buf.size() as usize {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Node offsets storage buffer", player)),
                 contents: bytemuck::cast_slice(&self.node_offsets),
@@ -554,7 +542,7 @@ impl<'a> GPURunner<'a> {
         (node_offsets, successor_offsets, energies)
     }
 
-    pub async fn execute_gpu(&mut self) -> Result<Vec<Option<u32>>, String> {
+    pub async fn execute_gpu(&mut self) -> Result<(), String> {
         println!("Visit list: {:?}", self.atk_shader.visit_list);
         loop {
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -695,11 +683,11 @@ impl<'a> GPURunner<'a> {
 
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
-                return Ok(Vec::new()); //TODO: Return value
+                return Ok(()); //TODO: Return value
             }
 
             self.prepare_buffers();
-            //return Ok(Vec::new());
+            //return Ok(());
         }
     }
 }
