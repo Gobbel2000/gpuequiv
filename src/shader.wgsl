@@ -119,36 +119,44 @@ fn inv_update(e: u32, upd: u32) -> u32 {
     return energy[0u].x | energy[0u].y | energy[0u].z | energy[0u].w;
 }
 
-
-@compute
-@workgroup_size(64, 1, 1)
-fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
-          @builtin(local_invocation_index) l_idx: u32) {
-    let i = g_id.x;
+fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     let n_nodes = arrayLength(&node_offsets);
-    if i >= node_offsets[n_nodes - 1u].offset {
-        return;
-    }
-
-    // Gather graph start and end node corresponding to current energy
+    let first_idx = i & (u32(-1i) << 6u); // Index of first element in workgroup
     let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
     for (var stride = len_log64; stride > 0u; stride--) {
         let stride_width = 1u << stride * 6u; // 64**stride
         let search_offset = wg_node_offset + l_idx * stride_width;
         let search_max = min(search_offset + stride_width, n_nodes);
         if (search_offset <= search_max
-            && node_offsets[search_offset].offset <= l_idx
-            && l_idx < node_offsets[search_max].offset)
+            && node_offsets[search_offset].offset <= first_idx
+            && first_idx < node_offsets[search_max].offset)
         {
             wg_node_offset = search_offset;
         }
     }
-    var start_node_idx = 0u;
+
     for (var node_idx = wg_node_offset; node_idx < wg_node_offset + 64u; node_idx++) {
-        if node_offsets[node_idx].offset <= l_idx && l_idx < node_offsets[node_idx + 1u].offset {
-            start_node_idx = node_idx;
-            break;
+        if node_offsets[node_idx].offset <= i && i < node_offsets[node_idx + 1u].offset {
+            return node_idx;
         }
+    }
+    // Couldn't find index. This should not happen.
+    return u32(-1i);
+}
+
+
+@compute
+@workgroup_size(64, 1, 1)
+fn process_attack(@builtin(global_invocation_id) g_id: vec3<u32>,
+                  @builtin(local_invocation_index) l_idx: u32)
+{
+    let i = g_id.x;
+    let n_nodes = arrayLength(&node_offsets);
+
+    let start_node_idx = find_start_node_idx(i, l_idx);
+
+    if i >= node_offsets[n_nodes - 1u].offset {
+        return;
     }
 
     // For now the values here are repeated so the array has the same length as energies
@@ -204,4 +212,41 @@ fn process_energies(@builtin(global_invocation_id) g_id: vec3<u32>,
     if packing_offset == 0u {
         minima[i >> 5u] = minima_buf[l_idx];
     }
+}
+
+// First part of the defence process: Only update all energies
+@compute
+@workgroup_size(64, 1, 1)
+fn defend_update(@builtin(global_invocation_id) g_id:vec3<u32>,
+                 @builtin(local_invocation_index) l_idx: u32)
+{
+    let i = g_id.x;
+    let n_nodes = arrayLength(&node_offsets);
+
+    let start_node_idx = find_start_node_idx(i, l_idx);
+
+    if i >= node_offsets[n_nodes - 1u].offset {
+        return;
+    }
+
+    // For now the values here are repeated so the array has the same length as energies
+    // Maybe the thing above should be done for this array as well.
+    // successor_offsets holds the successor indices from each node's adjacency
+    // list.
+    let end_node = successor_offsets[i];
+    let start_node = node_offsets[start_node_idx].node;
+
+    // Update energies
+    var update = graph_weights[graph_row_offsets[start_node] + end_node];
+
+    let updated = inv_update(energies[i], update);
+    energies[i] = updated;
+}
+
+@compute
+@workgroup_size(64, 1, 1)
+fn defend_combinations(@builtin(global_invocation_id) g_id:vec3<u32>,
+                       @builtin(local_invocation_index) l_idx: u32)
+{
+
 }
