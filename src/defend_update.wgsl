@@ -22,6 +22,7 @@ var<storage> graph_weights: array<u32>;
 
 struct NodeOffset {
     node: u32,
+    successor_offsets_idx: u32,
     energy_offset: u32,
     sup_offset: u32,
 }
@@ -115,7 +116,7 @@ fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     }
 
     for (var node_idx = wg_node_offset; node_idx < wg_node_offset + 64u; node_idx++) {
-        if node_offsets[node_idx].energy_offset <= i && i < node_offsets[node_idx + 1u].energy_offset {
+        if i >= node_offsets[node_idx].energy_offset && i < node_offsets[node_idx + 1u].energy_offset {
             return node_idx;
         }
     }
@@ -138,15 +139,22 @@ fn main(@builtin(global_invocation_id) g_id:vec3<u32>,
         return;
     }
 
-    // For now the values here are repeated so the array has the same length as energies
-    // Maybe the thing above should be done for this array as well.
-    // successor_offsets holds the successor indices from each node's adjacency
-    // list.
-    let end_node = successor_offsets[i];
-    let start_node = node_offsets[start_node_idx].node;
+    let node = node_offsets[start_node_idx];
+    let start_node = node.node;
 
     // Update energies
-    var update = graph_weights[graph_row_offsets[start_node] + end_node];
+    var update = 0u;
+    // Search for successor to use
+    for (var suc = node.successor_offsets_idx;
+         suc < node_offsets[start_node_idx + 1u].successor_offsets_idx;
+         suc++)
+    {
+        if i >= successor_offsets[suc] && i < successor_offsets[suc + 1u] {
+            // Index of successor in adjacency list as well as weight array
+            let successor_idx = suc - node_offsets[start_node_idx].successor_offsets_idx;
+            update = graph_weights[graph_row_offsets[start_node] + successor_idx];
+        }
+    }
 
     let updated = inv_update(energies[i], update);
     energies[i] = updated;
