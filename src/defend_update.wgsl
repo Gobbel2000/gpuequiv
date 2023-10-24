@@ -7,9 +7,6 @@ var<storage> node_offsets: array<NodeOffset>;
 @group(0) @binding(2)
 var<storage> successor_offsets: array<u32>;
 
-@group(0) @binding(3)
-var<storage, read_write> minima: array<u32>;
-
 
 @group(1) @binding(0)
 var<storage> graph_column_indices: array<u32>;

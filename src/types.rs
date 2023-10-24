@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Energy(pub u32);
 
 impl From<u32> for Energy {

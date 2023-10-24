@@ -1,7 +1,10 @@
 use gpuequiv::*;
 
 fn example_graph() -> GameGraph {
-    let attacker_pos = vec![true; 18];
+    //let attacker_pos = vec![true; 18];
+    let attacker_pos: Vec<bool> = (0..18)
+        .map(|i| [0, 2, 4, 6, 9, 11, 12, 14, 17].contains(&i))
+        .collect();
     GameGraph::new(
         18,
         &[

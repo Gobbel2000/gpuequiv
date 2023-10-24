@@ -1,9 +1,11 @@
 mod types;
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::iter;
 use std::rc::Rc;
 
+use futures_intrusive::channel::shared::{Sender, channel};
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
 
@@ -233,9 +235,11 @@ impl DefendShader {
     ) -> DefendShader {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
-            if game.graph.attacker_pos[v as usize] {
-                // Start with parent nodes of final points
-                visit_list.extend(&game.graph.reverse[v as usize]);
+            // Start with parent nodes of final points
+            for &w in &game.graph.reverse[v as usize] {
+                if !game.graph.attacker_pos[w as usize] {
+                    visit_list.push(w);
+                }
             }
         }
 
@@ -596,6 +600,88 @@ impl DefendShader {
         encoder.copy_buffer_to_buffer(
             &self.sup_buf, 0, &self.sup_staging_buf, 0, self.sup_buf.size());
     }
+
+    fn map_buffers(&self, sender: &Sender<Result<(), wgpu::BufferAsyncError>>) {
+        let minima_buffer_slice = self.minima_staging_buf.slice(..);
+        let sup_buffer_slice = self.sup_staging_buf.slice(..);
+        let sender0 = sender.clone();
+        minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender0.try_send(v).unwrap();
+        });
+        let sender1 = sender.clone();
+        sup_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender1.try_send(v).unwrap();
+        });
+    }
+
+    fn energies_equal(a: &[Energy], b: &[Energy]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let a_set: HashSet<Energy> = a.iter().copied().collect();
+        for e in b {
+            if !a_set.contains(e) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn process_results(&mut self, atk_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
+        let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
+        let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+
+        print!("Defend Minima:    ");
+        for minima_chunk in minima {
+            print!("{:064b} ", minima_chunk.reverse_bits());
+        }
+        println!("");
+
+        let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
+        let suprema: Vec<Energy> = bytemuck::cast_slice(&sup_data).to_vec();
+
+        println!("Defend Suprema: {:?}", suprema);
+
+        const MINIMA_SIZE: usize = 64;
+
+        for node_window in self.node_offsets.windows(2) {
+            let cur = node_window[0];
+            let next_offset = node_window[1].sup_offset;
+            let prev = &game.energies[cur.node as usize];
+
+            // Maybe it is faster to first compare the number of entries by counting 1's in minima
+            let new_energies: Vec<Energy> = suprema.iter()
+                .enumerate()
+                .take(next_offset as usize)
+                .skip(cur.sup_offset as usize)
+                // Read the corresponding minima flag
+                .filter(|(i, _)| minima[i / MINIMA_SIZE] & (1 << i % MINIMA_SIZE) != 0)
+                .map(|(_, e)| *e)
+                .collect();
+
+            if !Self::energies_equal(&new_energies, prev)  {
+                // Write new, filtered energies
+                game.energies[cur.node as usize] = new_energies;
+
+                // Winning budgets have improved, check predecessors in next iteration
+                for &pre in &game.graph.reverse[cur.node as usize] {
+                    if game.graph.attacker_pos[pre as usize] {
+                        atk_visit_list.push(pre);
+                    } else {
+                        self.visit_list.push(pre);
+                    }
+                }
+            }
+        }
+
+        println!("Defend visit list: {:?}", self.visit_list);
+
+        // Unmap buffers
+        drop(minima_data);
+        self.minima_staging_buf.unmap();
+        drop(sup_data);
+        self.sup_staging_buf.unmap();
+    }
 }
 
 struct AttackShader {
@@ -627,9 +713,11 @@ impl AttackShader {
     ) -> AttackShader {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
-            if game.graph.attacker_pos[v as usize] {
-                // Start with parent nodes of final points
-                visit_list.extend(&game.graph.reverse[v as usize]);
+            // Start with parent nodes of final points
+            for &w in &game.graph.reverse[v as usize] {
+                if game.graph.attacker_pos[w as usize] {
+                    visit_list.push(w);
+                }
             }
         }
 
@@ -821,7 +909,7 @@ impl AttackShader {
             offset: count,
             successor_offsets_idx: successor_offsets_count,
         });
-        println!("{:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
+        println!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
         (node_offsets, successor_offsets, energies)
     }
 
@@ -848,6 +936,110 @@ impl AttackShader {
             &self.minima_buf, 0, &self.minima_staging_buf, 0, self.minima_buf.size());
         encoder.copy_buffer_to_buffer(
             &self.energies_buf, 0, &self.energies_staging_buf, 0, self.energies_buf.size());
+    }
+
+    fn map_buffers(&self, sender: &Sender<Result<(), wgpu::BufferAsyncError>>) {
+        let minima_buffer_slice = self.minima_staging_buf.slice(..);
+        let energies_buffer_slice = self.energies_staging_buf.slice(..);
+        let sender0 = sender.clone();
+        minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender0.try_send(v).unwrap();
+        });
+        let sender1 = sender.clone();
+        energies_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender1.try_send(v).unwrap();
+        });
+    }
+
+    fn process_results(&mut self, def_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
+        let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
+        let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+
+        print!("Attack Minima:    ");
+        for minima_chunk in minima {
+            print!("{:064b} ", minima_chunk.reverse_bits());
+        }
+        println!("");
+
+        let energies_data = self.energies_staging_buf.slice(..).get_mapped_range();
+        let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
+
+        println!("Attack Energies: {:?}", energies);
+
+        const MINIMA_SIZE: u32 = 64;
+
+        for node_window in self.node_offsets.windows(2) {
+            let cur = node_window[0];
+            let next_offset = node_window[1].offset;
+            let width = next_offset - cur.offset;
+            let n_prev = game.energies[cur.node as usize].len() as u32;
+            let n_new = width - n_prev;
+            assert!(n_prev <= width);
+
+            let mut changed = false;
+            // If energies didn't change, all newly compared energies will be filtered out
+            if n_new > 0 {
+                for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
+                    // What position in the minima u64 the node starts at
+                    let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
+                    // ... and ends at
+                    let pad_right = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                    let shift_end = MINIMA_SIZE - 1 - pad_right;
+                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
+
+                    let minima_chunk = minima[minima_idx as usize];
+                    if minima_chunk & mask != 0 {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            // The previous energies at the end are all still present.
+            //TODO: Rethink if this check is still needed.
+            if !changed && n_prev > 0 {
+                for minima_idx in ((cur.offset + n_new) / MINIMA_SIZE) ..= ((next_offset - 1) / MINIMA_SIZE) {
+                    let shift_start = (cur.offset + n_new).max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
+                    let pad_right = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
+                    let shift_end = MINIMA_SIZE - 1 - pad_right;
+                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
+
+                    let minima_chunk = minima[minima_idx as usize];
+                    if minima_chunk | !mask != u64::MAX {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+
+            if changed {
+                // Write new, filtered energies
+                game.energies[cur.node as usize] = energies.iter()
+                    .enumerate()
+                    .take(next_offset as usize)
+                    .skip(cur.offset as usize)
+                    // Read the corresponding minima flag
+                    .filter(|(i, _)| minima[i / MINIMA_SIZE as usize] & (1 << i % MINIMA_SIZE as usize) > 0)
+                    .map(|(_, e)| *e)
+                    .collect();
+
+                // Winning budgets have improved, check predecessors in next iteration
+                for &pre in &game.graph.reverse[cur.node as usize] {
+                    if game.graph.attacker_pos[pre as usize] {
+                        self.visit_list.push(pre);
+                    } else {
+                        def_visit_list.push(pre);
+                    }
+                }
+            }
+        }
+
+        println!("Attack visit list: {:?}", self.visit_list);
+
+        // Unmap buffers
+        drop(minima_data);
+        self.minima_staging_buf.unmap();
+        drop(energies_data);
+        self.energies_staging_buf.unmap();
     }
 }
 
@@ -983,14 +1175,9 @@ impl<'a> GPURunner<'a> {
         })
     }
 
-    fn prepare_buffers(&mut self) {
-        self.atk_shader.update(&self.game);
-        self.def_shader.update(&self.game);
-    }
-
-
     pub async fn execute_gpu(&mut self) -> Result<(), String> {
-        println!("Visit list: {:?}", self.atk_shader.visit_list);
+        println!("Attack visit list: {:?}", self.atk_shader.visit_list);
+        println!("Defend visit list: {:?}", self.def_shader.visit_list);
         loop {
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
@@ -1001,125 +1188,39 @@ impl<'a> GPURunner<'a> {
             // Submit command encoder for processing by GPU
             self.gpu.queue.submit(Some(encoder.finish()));
 
-            let minima_buffer_slice = self.atk_shader.minima_staging_buf.slice(..);  //TODO: Handle output of def_shader too
-            let energies_buffer_slice = self.atk_shader.energies_staging_buf.slice(..);
-            let (sender, receiver) = futures_intrusive::channel::shared::channel(2);
-            let sender2 = sender.clone();
-            minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-                sender.try_send(v).unwrap();
-            });
-            energies_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-                sender2.try_send(v).unwrap();
-            });
+            const MAPS: usize = 4;
+            let (sender, receiver) = channel(MAPS);
+            self.atk_shader.map_buffers(&sender);
+            self.def_shader.map_buffers(&sender);
 
             // Reset visit lists
             self.def_shader.visit_list.clear();
             self.atk_shader.visit_list.clear();
+
             // Wait for the GPU to finish work
             self.gpu.device.poll(wgpu::Maintain::Wait);
 
-            let r1 = receiver.receive().await;
-            let r2 = receiver.receive().await;
-
-            if r1 != Some(Ok(())) || r2 != Some(Ok(())) {
-                return Err("Error while mapping buffers".to_string());
-            }
-
-            let minima = minima_buffer_slice.get_mapped_range();
-            let minima_bools: Vec<u64> = bytemuck::cast_slice(&minima).to_vec();
-            print!("Minima:    ");
-            for minima_chunk in &minima_bools {
-                print!("{:064b} ", minima_chunk.reverse_bits());
-            }
-            println!("");
-            //println!("Minima: {:?}", minima_bools);
-            let energies_data = energies_buffer_slice.get_mapped_range();
-            let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
-            println!("Energies: {:?}", energies);
-
-            const MINIMA_SIZE: u32 = 64;
-
-            for node_window in self.atk_shader.node_offsets.windows(2) {
-                let cur = node_window[0];
-                let next_offset = node_window[1].offset;
-                let width = next_offset - cur.offset;
-                let n_prev = self.game.energies[cur.node as usize].len() as u32;
-                let n_new = width - n_prev;
-                assert!(n_prev <= width);
-
-                let mut changed = false;
-                // If energies didn't change, all newly compared energies will be filtered out
-                if n_new > 0 {
-                    for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
-                        // What position in the minima u64 the node starts at
-                        let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                        // ... and ends at
-                        let pad_right = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
-                        let shift_end = MINIMA_SIZE - 1 - pad_right;
-                        let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
-
-                        let minima_chunk = minima_bools[minima_idx as usize];
-                        if minima_chunk & mask != 0 {
-                            changed = true;
-                            break;
-                        }
-                    }
-                }
-                // The previous energies at the end are all still present.
-                //TODO: Rethink if this check is still needed.
-                if !changed && n_prev > 0 {
-                    for minima_idx in ((cur.offset + n_new) / MINIMA_SIZE) ..= ((next_offset - 1) / MINIMA_SIZE) {
-                        let shift_start = (cur.offset + n_new).max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                        let pad_right = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
-                        let shift_end = MINIMA_SIZE - 1 - pad_right;
-                        let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
-
-                        let minima_chunk = minima_bools[minima_idx as usize];
-                        if minima_chunk | !mask != u64::MAX {
-                            changed = true;
-                            break;
-                        }
-                    }
-                }
-
-                if changed {
-                    // Write new, filtered energies
-                    self.game.energies[cur.node as usize] = energies.iter()
-                        .enumerate()
-                        .take(next_offset as usize)
-                        .skip(cur.offset as usize)
-                        // Read the corresponding minima flag
-                        .filter(|(i, _)| minima_bools[i / 64] & (1 << i % 64) > 0)
-                        .map(|(_, e)| *e)
-                        .collect();
-
-                    // Winning budgets have improved, check predecessors in next iteration
-                    for &pre in &self.game.graph.reverse[cur.node as usize] {
-                        if self.game.graph.attacker_pos[pre as usize] {
-                            self.atk_shader.visit_list.push(pre);
-                        } else {
-                            self.def_shader.visit_list.push(pre);
-                        }
-                    }
+            for _ in 0..MAPS {
+                if receiver.receive().await != Some(Ok(())) {
+                    return Err("Error while mapping buffers".to_string());
                 }
             }
-            println!("Visit list: {:?}", self.atk_shader.visit_list);
 
-            drop(minima);
-            self.atk_shader.minima_staging_buf.unmap();
-            drop(energies_data);
-            self.atk_shader.energies_staging_buf.unmap(); //TODO: do def_shader too
+            self.atk_shader.process_results(&mut self.def_shader.visit_list, &mut self.game);
+            self.def_shader.process_results(&mut self.atk_shader.visit_list, &mut self.game);
 
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
                 return Ok(()); //TODO: Return value
             }
 
-            self.prepare_buffers();
+            self.atk_shader.update(&self.game);
+            self.def_shader.update(&self.game);
             //return Ok(());
         }
     }
 }
+
 
 // Convenience function for creating bind group layout entries
 #[inline]

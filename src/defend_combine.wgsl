@@ -91,7 +91,7 @@ fn main(@builtin(global_invocation_id) g_id:vec3<u32>,
          suc < node_offsets[start_node_idx + 1u].successor_offsets_idx;
          suc++)
     {
-        let suc_width = successor_offsets[suc];
+        let suc_width = successor_offsets[suc + 1u] - successor_offsets[suc];
         let pick_idx = energy_idx + (combination % suc_width);
         let pick = energies[pick_idx];
         let energy = array<vec4<u32>,2u>(
