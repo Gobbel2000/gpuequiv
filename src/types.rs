@@ -70,7 +70,7 @@ unsafe impl bytemuck::Pod for Energy {}
 #[derive(Clone, Copy, Default)]
 pub enum Upd {
     #[default]
-    None,
+    Zero,
     Decrement,
     Min(u8),
 }
@@ -78,9 +78,20 @@ pub enum Upd {
 impl fmt::Display for Upd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Upd::None => write!(f, "0"),
+            Upd::Zero => write!(f, "0"),
             Upd::Decrement => write!(f, "-1"),
             Upd::Min(idx) => write!(f, "Min({idx})"),
+        }
+    }
+}
+
+impl From<i8> for Upd {
+    fn from(n: i8) -> Upd {
+        match n {
+            0 => Upd::Zero,
+            -1 => Upd::Decrement,
+            i8::MIN..=-2 => panic!("Invalid update entry"),
+            i => Upd::Min(i as u8),
         }
     }
 }
@@ -119,7 +130,7 @@ impl From<&[Upd]> for Update {
         let mut shift = 0;
         for e in array {
             let encoded = match e {
-                Upd::None => 0,
+                Upd::Zero => 0,
                 Upd::Decrement => 1,
                 Upd::Min(idx) => {
                     assert!(*idx <= 13, "Min update indices must be at most 13");
@@ -136,10 +147,9 @@ impl From<&[Upd]> for Update {
 #[macro_export]
 macro_rules! update {
     ( $( $x:expr ),* ) => {
-        Update::from([ $( $x, )* ].as_slice())
+        Update::from([ $( $x.into(), )* ].as_slice())
     };
 }
-
 
 impl From<&Update> for Vec<Upd> {
     fn from(update: &Update) -> Vec<Upd> {
@@ -147,7 +157,7 @@ impl From<&Update> for Vec<Upd> {
         let mut vec = Vec::with_capacity(8);
         loop {
             vec.push(match shifted & 0xf {
-                0 => Upd::None,
+                0 => Upd::Zero,
                 1 => Upd::Decrement,
                 idx => Upd::Min(idx as u8),
             });

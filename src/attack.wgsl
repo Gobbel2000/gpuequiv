@@ -167,7 +167,7 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
     var update = 0u;
     // Search for successor to use
     for (var suc = node.successor_offsets_idx;
-         // Stop before last entry, which correspond to the node's own energies. 
+         // Stop before last entry, which correspond to the node's own energies.
          // `update` is left at 0 in that case.
          suc < (node_offsets[start_node_idx + 1u].successor_offsets_idx - 1u);
          suc++)

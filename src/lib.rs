@@ -665,6 +665,7 @@ impl DefendShader {
 
                 // Winning budgets have improved, check predecessors in next iteration
                 for &pre in &game.graph.reverse[cur.node as usize] {
+                    //TODO: Prune duplicate entries from both attack and defend shader
                     if game.graph.attacker_pos[pre as usize] {
                         atk_visit_list.push(pre);
                     } else {
