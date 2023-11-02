@@ -29,7 +29,7 @@ struct NodeOffset {
 // Temporary buffer to hold the output flags as u32. This is later condensed
 // into bit-packed u32's in the minima storage buffer.
 var<workgroup> minima_buf: array<u32,64u>;
-var<workgroup> wg_node_offset: u32;
+var<workgroup> wg_node: u32;
 
 fn less_eq(a: u32, b: u32) -> bool {
     return ((a & 0x3u) <= (b & 0x3u)
@@ -126,17 +126,19 @@ fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
     for (var stride = len_log64; stride > 0u; stride--) {
         let stride_width = 1u << stride * 6u; // 64**stride
-        let search_offset = wg_node_offset + l_idx * stride_width;
+        let search_offset = wg_node + l_idx * stride_width;
         let search_max = min(search_offset + stride_width, n_nodes);
         if (search_offset <= search_max
             && node_offsets[search_offset].offset <= first_idx
             && first_idx < node_offsets[search_max].offset)
         {
-            wg_node_offset = search_offset;
+            wg_node = search_offset;
         }
+        // Ensure wg_node is properly written
+        workgroupBarrier();
     }
 
-    for (var node_idx = wg_node_offset; node_idx < wg_node_offset + 64u; node_idx++) {
+    for (var node_idx = wg_node; node_idx < wg_node + 64u; node_idx++) {
         if i >= node_offsets[node_idx].offset && i < node_offsets[node_idx + 1u].offset {
             return node_idx;
         }
@@ -181,12 +183,25 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
 
     let updated = inv_update(energies[i], update);
     energies[i] = updated;
+}
 
-    workgroupBarrier();
+@compute
+@workgroup_size(64, 1, 1)
+fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
+            @builtin(local_invocation_index) l_idx: u32)
+{
+    let i = g_id.x;
+    let n_nodes = arrayLength(&node_offsets);
 
-    // Find minmal energies
+    let start_node_idx = find_start_node_idx(i, l_idx);
+
+    if i >= node_offsets[n_nodes - 1u].offset {
+        return;
+    }
+
     let packing_offset = l_idx & 0x1fu; // zero everything but last 5 bits, l_idx % 32
     var is_minimal = 1u << packing_offset;
+    let energy = energies[i];
 
     let e_start = node_offsets[start_node_idx].offset;
     let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
@@ -194,8 +209,8 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
         let e2 = energies[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
-        if j != i && ((e2 == updated && i < j) ||
-                      (e2 != updated && less_eq(e2, updated))) {
+        if j != i && ((e2 == energy && i < j) ||
+                      (e2 != energy && less_eq(e2, energy))) {
             // Mark to be filtered out
             is_minimal = 0u;
             break;

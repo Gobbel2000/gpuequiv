@@ -24,7 +24,7 @@ struct NodeOffset {
     sup_offset: u32,
 }
 
-var<workgroup> wg_node_offset: u32;
+var<workgroup> wg_node: u32;
 
 // Apply the update to e backwards
 fn inv_update(e: u32, upd: u32) -> u32 {
@@ -102,17 +102,19 @@ fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
     for (var stride = len_log64; stride > 0u; stride--) {
         let stride_width = 1u << stride * 6u; // 64**stride
-        let search_offset = wg_node_offset + l_idx * stride_width;
+        let search_offset = wg_node + l_idx * stride_width;
         let search_max = min(search_offset + stride_width, n_nodes);
         if (search_offset <= search_max
             && node_offsets[search_offset].energy_offset <= first_idx
             && first_idx < node_offsets[search_max].energy_offset)
         {
-            wg_node_offset = search_offset;
+            wg_node = search_offset;
         }
+        // Ensure wg_node is properly written
+        workgroupBarrier();
     }
 
-    for (var node_idx = wg_node_offset; node_idx < wg_node_offset + 64u; node_idx++) {
+    for (var node_idx = wg_node; node_idx < wg_node + 64u; node_idx++) {
         if i >= node_offsets[node_idx].energy_offset && i < node_offsets[node_idx + 1u].energy_offset {
             return node_idx;
         }

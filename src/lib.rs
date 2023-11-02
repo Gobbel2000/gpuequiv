@@ -221,6 +221,8 @@ struct DefendShader {
     combine_bind_groups: [wgpu::BindGroup; 2],
     combine_bind_group_layouts: [wgpu::BindGroupLayout; 2],
     combine_pipeline: wgpu::ComputePipeline,
+
+    minima_pipeline: wgpu::ComputePipeline,
 }
 
 impl PlayerShader for DefendShader {
@@ -384,6 +386,13 @@ impl DefendShader {
             entry_point: "main",
         });
 
+        let minima_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Defend minima pipeline"),
+            layout: Some(&combine_pipeline_layout),
+            module: &combine_shader,
+            entry_point: "minimize",
+        });
+
         DefendShader {
             gpu,
             visit_list,
@@ -404,6 +413,8 @@ impl DefendShader {
             combine_bind_groups,
             combine_bind_group_layouts,
             combine_pipeline,
+
+            minima_pipeline,
         }
     }
 
@@ -573,16 +584,14 @@ impl DefendShader {
             cpass.set_bind_group(0, &self.update_bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
 
-            // Ceil( n_visit / WORKGROUP_SIZE )
             let n_energies = self.energies.len() as u32;
-            let workgroup_count = if n_energies % WORKGROUP_SIZE > 0 {
-                n_energies / WORKGROUP_SIZE + 1
-            } else {
-                n_energies / WORKGROUP_SIZE
-            };
-            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+            let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
+            cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
         }
-        { // Compute pass for taking suprema of combinations and minimizing them
+        let n_sup = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
+            .sup_offset;
+        let workgroup_count = n_sup.div_ceil(WORKGROUP_SIZE); 
+        { // Compute pass for taking suprema of combinations
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Defend suprema of combinations compute pass"),
                 timestamp_writes: None,
@@ -590,10 +599,16 @@ impl DefendShader {
             cpass.set_pipeline(&self.combine_pipeline);
             cpass.set_bind_group(0, &self.combine_bind_groups[0], &[]);
             cpass.set_bind_group(1, &self.combine_bind_groups[1], &[]);
-
-            let n_sup = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
-                .sup_offset;
-            let workgroup_count = n_sup.div_ceil(WORKGROUP_SIZE); 
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        { // Compute pass for minimizing final suprema
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Defend minima compute pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.minima_pipeline);
+            cpass.set_bind_group(0, &self.combine_bind_groups[0], &[]);
+            cpass.set_bind_group(1, &self.combine_bind_groups[1], &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         // Copy output to staging buffer
@@ -702,6 +717,7 @@ struct AttackShader {
     bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
+    minima_pipeline: wgpu::ComputePipeline,
 }
 
 impl PlayerShader for AttackShader {
@@ -790,6 +806,12 @@ impl AttackShader {
             module: &shader,
             entry_point: "main",
         });
+        let minima_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Attack minima pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "minimize",
+        });
 
         AttackShader {
             gpu,
@@ -806,6 +828,7 @@ impl AttackShader {
             bind_group,
             bind_group_layout,
             pipeline,
+            minima_pipeline,
         }
     }
 
@@ -917,6 +940,8 @@ impl AttackShader {
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
+        let n_energies = self.energies.len() as u32;
+        let workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Attack Compute Pass"),
@@ -925,14 +950,16 @@ impl AttackShader {
             cpass.set_pipeline(&self.pipeline);
             cpass.set_bind_group(0, &self.bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
-
-            // Ceil( n_visit / WORKGROUP_SIZE )
-            let n_energies = self.energies.len() as u32;
-            let workgroup_count = if n_energies % WORKGROUP_SIZE > 0 {
-                n_energies / WORKGROUP_SIZE + 1
-            } else {
-                n_energies / WORKGROUP_SIZE
-            };
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        { // Compute pass for minimizing updated energies
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Attack minima compute pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.minima_pipeline);
+            cpass.set_bind_group(0, &self.bind_group, &[]);
+            cpass.set_bind_group(1, graph_bind_group, &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         // Copy output to staging buffer

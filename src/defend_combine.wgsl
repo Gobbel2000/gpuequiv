@@ -55,6 +55,8 @@ fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
         {
             wg_node = search_offset;
         }
+        // Ensure wg_node_offset is properly written
+        workgroupBarrier();
     }
 
     for (var node_idx = wg_node; node_idx < wg_node + 64u; node_idx++) {
@@ -109,21 +111,34 @@ fn main(@builtin(global_invocation_id) g_id:vec3<u32>,
     let sup_packed = supremum[0u].x | supremum[0u].y | supremum[0u].z | supremum[0u].w;
     
     suprema[i] = sup_packed;
+}
 
-    workgroupBarrier();
+@compute
+@workgroup_size(64, 1, 1)
+fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
+            @builtin(local_invocation_index) l_idx: u32)
+{
+    let i = g_id.x;
+    let n_nodes = arrayLength(&node_offsets);
 
-    // Find minmal energies
+    let start_node_idx = find_start_node_idx(i, l_idx);
+
+    if i >= node_offsets[n_nodes - 1u].sup_offset {
+        return;
+    }
+
     let packing_offset = l_idx & 0x1fu; // zero everything but last 5 bits, l_idx % 32
     var is_minimal = 1u << packing_offset;
+    let energy = suprema[i];
 
-    let e_start = node.sup_offset;
+    let e_start = node_offsets[start_node_idx].sup_offset;
     let e_end = node_offsets[start_node_idx + 1u].sup_offset; // exclusive
     for (var j: u32 = e_start; j < e_end; j++) {
         let e2 = energies[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
-        if j != i && ((e2 == sup_packed && i < j) ||
-                      (e2 != sup_packed && less_eq(e2, sup_packed))) {
+        if j != i && ((e2 == energy && i < j) ||
+                      (e2 != energy && less_eq(e2, energy))) {
             // Mark to be filtered out
             is_minimal = 0u;
             break;
