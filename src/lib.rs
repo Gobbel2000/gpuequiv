@@ -566,7 +566,8 @@ impl DefendShader {
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
         { // Compute pass for updating energies
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend energy update compute pass")
+                label: Some("Defend energy update compute pass"),
+                timestamp_writes: None,
             });
             cpass.set_pipeline(&self.update_pipeline);
             cpass.set_bind_group(0, &self.update_bind_group, &[]);
@@ -584,6 +585,7 @@ impl DefendShader {
         { // Compute pass for taking suprema of combinations and minimizing them
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Defend suprema of combinations compute pass"),
+                timestamp_writes: None,
             });
             cpass.set_pipeline(&self.combine_pipeline);
             cpass.set_bind_group(0, &self.combine_bind_groups[0], &[]);
@@ -917,7 +919,8 @@ impl AttackShader {
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Attack Compute Pass")
+                label: Some("Attack Compute Pass"),
+                timestamp_writes: None,
             });
             cpass.set_pipeline(&self.pipeline);
             cpass.set_bind_group(0, &self.bind_group, &[]);

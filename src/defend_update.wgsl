@@ -40,8 +40,8 @@ fn inv_update(e: u32, upd: u32) -> u32 {
     );
 
     // Apply 1u-updates first
-    energy[0u] += vec4<u32>(updates[0u] == 1u); // 1 encodes 1-update
-    energy[1u] += vec4<u32>(updates[1u] == 1u);
+    energy[0u] += vec4<u32>(updates[0u] == vec4<u32>(1u)); // 1 encodes 1-update
+    energy[1u] += vec4<u32>(updates[1u] == vec4<u32>(1u));
 
     // Look for min-updates
     // 0u means no update, 1 means 1-update, everything else represents
