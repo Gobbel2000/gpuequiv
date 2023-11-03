@@ -10,7 +10,7 @@ rust-version = "1.73"
 wgpu = "0.18"
 simple_logger = "4.2"
 log = "0.4"
-pollster = "0.3"
+pollster = { version = "0.3", features = ["macro"] }
 bytemuck = "1.14"
 futures-intrusive = "0.5"
 
