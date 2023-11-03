@@ -2,6 +2,7 @@ mod types;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::{fmt, error, result};
 use std::iter;
 use std::rc::Rc;
 
@@ -91,13 +92,15 @@ impl EnergyGame {
         self
     }
 
-    pub async fn get_gpu_runner(&mut self) -> GPURunner {
+    pub async fn get_gpu_runner(&mut self) -> Result<GPURunner> {
         GPURunner::with_game(self).await
     }
 
-    pub async fn run(&mut self) -> Result<(), String> {
-        let mut runner = self.get_gpu_runner().await;
+    pub async fn run(&mut self) -> Result<&[Vec<Energy>]> {
+        let mut runner = self.get_gpu_runner().await?;
         runner.execute_gpu().await
+            // Return final energy table
+            .map(|_| self.energies.as_slice())
     }
 }
 
@@ -234,7 +237,7 @@ impl DefendShader {
         gpu: Rc<GPUCommon>,
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> DefendShader {
+    ) -> Result<DefendShader> {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
@@ -245,7 +248,7 @@ impl DefendShader {
             }
         }
 
-        let (node_offsets, successor_offsets, energies) = Self::collect_data(&visit_list, game);
+        let (node_offsets, successor_offsets, energies) = Self::collect_data(&visit_list, game)?;
         let node_offsets_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{} Node offsets storage buffer", Self::name())),
             contents: bytemuck::cast_slice(&node_offsets),
@@ -393,7 +396,7 @@ impl DefendShader {
             entry_point: "minimize",
         });
 
-        DefendShader {
+        Ok(DefendShader {
             gpu,
             visit_list,
             energies,
@@ -415,15 +418,15 @@ impl DefendShader {
             combine_pipeline,
 
             minima_pipeline,
-        }
+        })
     }
 
     fn update(&mut self,
         game: &EnergyGame,
-    ) {
+    ) -> Result<()> {
         let device = &self.gpu.device;
         let queue = &self.gpu.queue;
-        let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game);
+        let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game)?;
 
         if !buffer_fits(&energies, &self.energies_buf) {
             self.energies_buf = Self::get_energies_buf(&device, &energies);
@@ -525,9 +528,13 @@ impl DefendShader {
                 ],
             }),
         ];
+        Ok(())
     }
 
-    fn collect_data(visit_list: &[u32], game: &EnergyGame) -> (Vec<NodeOffsetDef>, Vec<u32>, Vec<Energy>) {
+    fn collect_data(
+        visit_list: &[u32],
+        game: &EnergyGame,
+    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, Vec<Energy>)> {
         let mut energies = Vec::new();
         let mut successor_offsets = Vec::new();
         let mut successor_offsets_count = 0;
@@ -541,9 +548,7 @@ impl DefendShader {
             // If any successor has no energies associated yet, skip this node
             if game.graph.adj[snode].iter()
                 .any(|&suc| game.energies[suc as usize].is_empty())
-            {
-                continue
-            }
+            { continue }
 
             node_offsets.push(NodeOffsetDef {
                 node: *node,
@@ -556,11 +561,14 @@ impl DefendShader {
                 let successor_energies = &game.energies[successor as usize];
                 energies.extend(successor_energies);
                 successor_offsets.push(energies_count);
-                energies_count = energies_count.checked_add(successor_energies.len() as u32).unwrap();
-                cur_sup_count = cur_sup_count.checked_mul(successor_energies.len() as u32).unwrap();
+                energies_count = energies_count.checked_add(successor_energies.len() as u32)
+                    .ok_or(Error::Overflow)?;
+                cur_sup_count = cur_sup_count.checked_mul(successor_energies.len() as u32)
+                    .ok_or(Error::Overflow)?;
             }
-            successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32).unwrap();
-            sup_count = sup_count.checked_add(cur_sup_count).unwrap();
+            successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32)
+                .ok_or(Error::Overflow)?;
+            sup_count = sup_count.checked_add(cur_sup_count).ok_or(Error::Overflow)?;
         }
         successor_offsets.push(energies_count);
         // Last offset does not correspond to another starting node, mark with u32::MAX
@@ -571,7 +579,7 @@ impl DefendShader {
             sup_offset: sup_count,
         });
 
-        (node_offsets, successor_offsets, energies)
+        Ok((node_offsets, successor_offsets, energies))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -618,16 +626,16 @@ impl DefendShader {
             &self.sup_buf, 0, &self.sup_staging_buf, 0, self.sup_buf.size());
     }
 
-    fn map_buffers(&self, sender: &Sender<Result<(), wgpu::BufferAsyncError>>) {
+    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) {
         let minima_buffer_slice = self.minima_staging_buf.slice(..);
         let sup_buffer_slice = self.sup_staging_buf.slice(..);
         let sender0 = sender.clone();
         minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender0.try_send(v).unwrap();
+            sender0.try_send(v).expect("Channel should be writable");
         });
         let sender1 = sender.clone();
         sup_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender1.try_send(v).unwrap();
+            sender1.try_send(v).expect("Channel should be writable");
         });
     }
 
@@ -729,7 +737,7 @@ impl AttackShader {
         gpu: Rc<GPUCommon>,
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> AttackShader {
+    ) -> Result<AttackShader> {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
@@ -740,7 +748,7 @@ impl AttackShader {
             }
         }
 
-        let (node_offsets, successor_offsets, energies) = Self::collect_data(&visit_list, game);
+        let (node_offsets, successor_offsets, energies) = Self::collect_data(&visit_list, game)?;
 
         let node_offsets_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{} Node offsets storage buffer", Self::name())),
@@ -813,7 +821,7 @@ impl AttackShader {
             entry_point: "minimize",
         });
 
-        AttackShader {
+        Ok(AttackShader {
             gpu,
             visit_list,
             energies,
@@ -829,15 +837,15 @@ impl AttackShader {
             bind_group_layout,
             pipeline,
             minima_pipeline,
-        }
+        })
     }
 
     fn update(&mut self,
         game: &EnergyGame,
-    ) {
+    ) -> Result<()> {
         let device = &self.gpu.device;
         let queue = &self.gpu.queue;
-        let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game);
+        let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game)?;
 
         if !buffer_fits(&energies, &self.energies_buf) {
             self.energies_buf = Self::get_energies_buf(&device, &energies);
@@ -897,9 +905,13 @@ impl AttackShader {
                 },
             ],
         });
+        Ok(())
     }
 
-    fn collect_data(visit_list: &[u32], game: &EnergyGame) -> (Vec<NodeOffsetAtk>, Vec<u32>, Vec<Energy>) {
+    fn collect_data(
+        visit_list: &[u32],
+        game: &EnergyGame
+    ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, Vec<Energy>)> {
         let mut energies = Vec::new();
         let mut successor_offsets = Vec::new();
         let mut successor_offsets_count = 0;
@@ -916,8 +928,8 @@ impl AttackShader {
                 let successor_energies = &game.energies[successor as usize];
                 energies.extend(successor_energies);
                 successor_offsets.push(count);
-                //TODO: Report error on overflow instead of panicking
-                count = count.checked_add(successor_energies.len() as u32).unwrap();
+                count = count.checked_add(successor_energies.len() as u32)
+                    .ok_or(Error::Overflow)?;
             }
             // Last "successor" is always the own node in the attack case
             successor_offsets.push(count);
@@ -925,8 +937,9 @@ impl AttackShader {
             energies.extend(own_energies);
             // Add number of successors + 1 for own node
             successor_offsets_count = successor_offsets_count.checked_add(
-                game.graph.adj[*node as usize].len() as u32 + 1).unwrap();
-            count = count.checked_add(own_energies.len() as u32).unwrap();
+                game.graph.adj[*node as usize].len() as u32 + 1)
+                .ok_or(Error::Overflow)?;
+            count = count.checked_add(own_energies.len() as u32).ok_or(Error::Overflow)?;
         }
         successor_offsets.push(count);
         // Last offset does not correspond to another starting node, mark with u32::MAX
@@ -936,7 +949,7 @@ impl AttackShader {
             successor_offsets_idx: successor_offsets_count,
         });
         println!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
-        (node_offsets, successor_offsets, energies)
+        Ok((node_offsets, successor_offsets, energies))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -969,16 +982,16 @@ impl AttackShader {
             &self.energies_buf, 0, &self.energies_staging_buf, 0, self.energies_buf.size());
     }
 
-    fn map_buffers(&self, sender: &Sender<Result<(), wgpu::BufferAsyncError>>) {
+    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) {
         let minima_buffer_slice = self.minima_staging_buf.slice(..);
         let energies_buffer_slice = self.energies_staging_buf.slice(..);
         let sender0 = sender.clone();
         minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender0.try_send(v).unwrap();
+            sender0.try_send(v).expect("Channel should be writable");
         });
         let sender1 = sender.clone();
         energies_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender1.try_send(v).unwrap();
+            sender1.try_send(v).expect("Channel should be writable");
         });
     }
 
@@ -1083,16 +1096,16 @@ struct GPUCommon {
 }
 
 impl GPUCommon {
-    async fn new() -> GPUCommon {
-        let (device, queue) = Self::get_device().await;
+    async fn new() -> Result<GPUCommon> {
+        let (device, queue) = Self::get_device().await?;
 
-        GPUCommon {
+        Ok(GPUCommon {
             device,
             queue,
-        }
+        })
     }
 
-    async fn get_device() -> (Device, Queue) {
+    async fn get_device() -> Result<(Device, Queue)> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -1100,9 +1113,9 @@ impl GPUCommon {
                 ..Default::default()
             })
             .await
-            .expect("Could not get wgpu adapter");
+            .ok_or(Error::NoAdapter)?;
 
-        adapter.request_device(
+        Ok(adapter.request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     features: wgpu::Features::empty(),
@@ -1110,8 +1123,7 @@ impl GPUCommon {
                 },
                 None,
             )
-            .await
-            .expect("Could not get device")
+            .await?)
     }
 }
 
@@ -1129,17 +1141,17 @@ pub struct GPURunner<'a> {
 
 impl<'a> GPURunner<'a> {
 
-    pub async fn with_game(game: &'a mut EnergyGame) -> GPURunner<'a> {
-        let gpu_common = Rc::new(GPUCommon::new().await);
+    pub async fn with_game(game: &'a mut EnergyGame) -> Result<GPURunner<'a>> {
+        let gpu_common = Rc::new(GPUCommon::new().await?);
         let graph_buffers = Self::graph_buffers(&game.graph, &gpu_common.device);
         let graph_bind_group_layout = Self::graph_bind_group_layout(&gpu_common.device);
         let graph_bind_group = Self::graph_bind_group(
             &graph_bind_group_layout, &gpu_common.device, &graph_buffers);
 
-        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout);
-        let def_shader = DefendShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout);
+        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout)?;
+        let def_shader = DefendShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout)?;
 
-        GPURunner {
+        Ok(GPURunner {
             game,
             gpu: gpu_common,
             _graph_bufs: graph_buffers,
@@ -1147,7 +1159,7 @@ impl<'a> GPURunner<'a> {
 
             atk_shader,
             def_shader,
-        }
+        })
     }
 
     fn graph_buffers(graph: &GameGraph, device: &Device) -> (Buffer, Buffer, Buffer) {
@@ -1206,7 +1218,7 @@ impl<'a> GPURunner<'a> {
         })
     }
 
-    pub async fn execute_gpu(&mut self) -> Result<(), String> {
+    pub async fn execute_gpu(&mut self) -> Result<()> {
         println!("Attack visit list: {:?}", self.atk_shader.visit_list);
         println!("Defend visit list: {:?}", self.def_shader.visit_list);
         loop {
@@ -1232,9 +1244,7 @@ impl<'a> GPURunner<'a> {
             self.gpu.device.poll(wgpu::Maintain::Wait);
 
             for _ in 0..MAPS {
-                if receiver.receive().await != Some(Ok(())) {
-                    return Err("Error while mapping buffers".to_string());
-                }
+                receiver.receive().await.expect("Channel should not be closed")?;
             }
 
             self.atk_shader.process_results(&mut self.def_shader.visit_list, &mut self.game);
@@ -1242,12 +1252,12 @@ impl<'a> GPURunner<'a> {
 
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
-                return Ok(()); //TODO: Return value
+                //return Ok(&self.game.energies);
+                return Ok(());
             }
 
-            self.atk_shader.update(&self.game);
-            self.def_shader.update(&self.game);
-            //return Ok(());
+            self.atk_shader.update(&self.game)?;
+            self.def_shader.update(&self.game)?;
         }
     }
 }
@@ -1272,6 +1282,49 @@ fn bgl_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
 fn buffer_fits<T>(vec: &Vec<T>, buf: &Buffer) -> bool {
     vec.len() * std::mem::size_of::<T>() <= buf.size() as usize
 }
+
+#[derive(Debug)]
+pub enum Error {
+    NoAdapter,
+    NoDevice(wgpu::RequestDeviceError),
+    Overflow,
+    BufferMap(wgpu::BufferAsyncError),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::NoAdapter => write!(f, "could not get GPU adapter"),
+            Error::NoDevice(source) => write!(f, "could not get GPU device: {}", source),
+            Error::Overflow => write!(f, "overflow occured during calculation, input size too large"),
+            Error::BufferMap(source) => source.fmt(f),
+        }
+    }
+}
+
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Error::NoDevice(source) => Some(source),
+            Error::BufferMap(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<wgpu::RequestDeviceError> for Error {
+    fn from(err: wgpu::RequestDeviceError) -> Error {
+        Error::NoDevice(err)
+    }
+}
+
+impl From<wgpu::BufferAsyncError> for Error {
+    fn from(err: wgpu::BufferAsyncError) -> Error {
+        Error::BufferMap(err)
+    }
+}
+
+pub type Result<T> = result::Result<T, Error>;
 
 
 #[cfg(test)]

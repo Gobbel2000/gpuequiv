@@ -88,9 +88,8 @@ fn multifront() -> EnergyGame {
 
 async fn execute() {
     let mut game = multifront();
-    let mut runner = game.get_gpu_runner().await;
-    runner.execute_gpu().await.unwrap();
-    println!("{:#?}", game.energies);
+    let energies = game.run().await.unwrap();
+    println!("{:#?}", energies);
 }
 
 fn main() {
