@@ -578,6 +578,7 @@ impl DefendShader {
             energy_offset: energies_count,
             sup_offset: sup_count,
         });
+        println!("Defend data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
         Ok((node_offsets, successor_offsets, energies))
     }

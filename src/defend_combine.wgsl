@@ -134,7 +134,7 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
     let e_start = node_offsets[start_node_idx].sup_offset;
     let e_end = node_offsets[start_node_idx + 1u].sup_offset; // exclusive
     for (var j: u32 = e_start; j < e_end; j++) {
-        let e2 = energies[j];
+        let e2 = suprema[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
         if j != i && ((e2 == energy && i < j) ||
