@@ -1,7 +1,7 @@
 use gpuequiv::*;
 
 // Varied, multidimensional updates, leading to multidimensional energies
-fn multidimensional() -> EnergyGame {
+fn _multidimensional() -> EnergyGame {
     let attacker_pos: Vec<bool> = (0..18)
         .map(|i| [0, 2, 4, 6, 9, 11, 12, 14, 17].contains(&i))
         .collect();
@@ -35,8 +35,46 @@ fn multidimensional() -> EnergyGame {
         .with_reach(vec![7, 15])
 }
 
+fn combinations() -> EnergyGame {
+    let attacker_pos: Vec<bool> = (0..20)
+        .map(|i| [1, 2, 3, 4, 6, 10, 16].contains(&i))
+        .collect();
+    let graph = GameGraph::new(
+        20,
+        &[
+            (0, 1, update![-1]),
+            (0, 2, update![0, -1]),
+            (0, 3, update![0, 0, 0, -1]),
+            (0, 4, update![0, 0, 0, 0, 0, -1]),
+
+            (1, 5, update![-1]),
+            (5, 6, update![-1]),
+            (6, 7, update![0, -1]),
+            (6, 8, update![-1, 0]),
+            (5, 10, update![Upd::Min(2)]),
+            (1, 9, update![0, 0, -1]),
+            (9, 10, update![0, 0, -1]),
+            (10, 11, update![-1]),
+
+            (2, 12, update![0, 0, -1]),
+            (2, 13, update![0, -1]),
+
+            (3, 14, update![0, 0, -1]),
+            (3, 15, update![0, 0, 0, Upd::Min(4)]),
+            (15, 16, update![0, 0, 0, -1]),
+            (16, 17, update![0, 0, 0, -1]),
+            (3, 18, update![0, -1]),
+
+            (4, 19, update![0, 0, 0, 0, 0, -1]),
+        ],
+        &attacker_pos,
+    );
+    EnergyGame::from_graph(graph)
+        .with_reach(vec![7, 8, 11, 12, 13, 14, 17, 18, 19])
+}
+
 async fn execute() {
-    let mut game = multidimensional();
+    let mut game = combinations();
     let energies = game.run().await.unwrap();
     println!("{:#?}", energies);
 }
