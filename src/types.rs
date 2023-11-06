@@ -1,5 +1,7 @@
 use std::fmt;
 
+use serde::{Serialize, Deserialize};
+
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Energy(pub u32);
@@ -67,7 +69,8 @@ unsafe impl bytemuck::Zeroable for Energy {}
 unsafe impl bytemuck::Pod for Energy {}
 
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(into = "i8", from = "i8")]
 pub enum Upd {
     #[default]
     Zero,
@@ -96,9 +99,20 @@ impl From<i8> for Upd {
     }
 }
 
+impl From<Upd> for i8 {
+    fn from(upd: Upd) -> i8 {
+        match upd {
+            Upd::Zero => 0,
+            Upd::Decrement => -1,
+            Upd::Min(idx) => idx as i8,
+        }
+    }
+}
+
 
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(into = "Vec<Upd>", from = "Vec<Upd>")]
 pub struct Update(pub u32);
 
 impl Update {
@@ -144,6 +158,12 @@ impl From<&[Upd]> for Update {
     }
 }
 
+impl From<Vec<Upd>> for Update {
+    fn from(vec: Vec<Upd>) -> Self {
+        vec.as_slice().into()
+    }
+}
+
 #[macro_export]
 macro_rules! update {
     ( $( $x:expr ),* ) => {
@@ -159,13 +179,19 @@ impl From<&Update> for Vec<Upd> {
             vec.push(match shifted & 0xf {
                 0 => Upd::Zero,
                 1 => Upd::Decrement,
-                idx => Upd::Min(idx as u8),
+                idx => Upd::Min(idx as u8 - 2),
             });
             shifted >>= 4;
             if shifted == 0 {
                 return vec;
             }
         }
+    }
+}
+
+impl From<Update> for Vec<Upd> {
+    fn from(update: Update) -> Vec<Upd> {
+        (&update).into()
     }
 }
 

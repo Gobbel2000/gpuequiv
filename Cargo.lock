@@ -472,6 +472,8 @@ dependencies = [
  "futures-intrusive",
  "log",
  "pollster",
+ "serde",
+ "serde_json",
  "simple_logger",
  "wasm-bindgen-futures",
  "web-sys",

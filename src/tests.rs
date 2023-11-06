@@ -30,8 +30,7 @@ fn simple_graph() -> EnergyGame {
         ],
         &attacker_pos,
     );
-    EnergyGame::from_graph(graph)
-        .with_reach(vec![7, 15])
+    EnergyGame::standard_reach(graph)
 }
 
 #[pollster::test]
@@ -107,8 +106,7 @@ async fn fork() {
         ],
         &[false, true, false, false],
     );
-    let mut game = EnergyGame::from_graph(graph)
-        .with_reach(vec![2, 3]);
+    let mut game = EnergyGame::standard_reach(graph);
     assert_eq!(game.run().await.unwrap(),
         &[
             vec![energy![1, 0, 0, 1], energy![0, 1, 0, 1]],
@@ -154,8 +152,7 @@ fn combinations_graph() -> EnergyGame {
         ],
         &attacker_pos,
     );
-    EnergyGame::from_graph(graph)
-        .with_reach(vec![7, 8, 11, 12, 13, 14, 17, 18, 19])
+    EnergyGame::standard_reach(graph)
 }
 
 #[pollster::test]

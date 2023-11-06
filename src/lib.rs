@@ -1,12 +1,14 @@
 mod types;
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::{fmt, error, result};
 use std::iter;
 use std::rc::Rc;
 
 use futures_intrusive::channel::shared::{Sender, channel};
+use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
 
@@ -18,11 +20,12 @@ const WORKGROUP_SIZE: u32 = 64;
 // Buffers with size 0 are not allowed.
 const INITIAL_CAPACITY: usize = 64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameGraph {
     pub n_vertices: u32,
     pub adj: Vec<Vec<u32>>,
-    pub reverse: Vec<Vec<u32>>,
+    #[serde(skip)]
+    adj_reverse: OnceCell<Vec<Vec<u32>>>,
     pub weights: Vec<Vec<Update>>,
     pub attacker_pos: Vec<bool>,
 }
@@ -41,10 +44,22 @@ impl GameGraph {
         Self {
             n_vertices,
             adj,
-            reverse,
+            adj_reverse: reverse.into(),
             weights,
             attacker_pos: attacker_pos.to_vec(),
         }
+    }
+
+    pub fn reverse(&self) -> &Vec<Vec<u32>> {
+        self.adj_reverse.get_or_init(|| {
+            let mut reverse = vec![vec![]; self.n_vertices as usize];
+            for (from, adj) in self.adj.iter().enumerate() {
+                for to in adj {
+                    reverse[*to as usize].push(from as u32);
+                }
+            }
+            reverse
+        })
     }
 
     fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
@@ -79,17 +94,24 @@ pub struct EnergyGame {
 
 impl EnergyGame {
 
-    pub fn from_graph(graph: GameGraph) -> Self {
-        let energies = vec![vec![]; graph.n_vertices as usize];
-        EnergyGame { graph, energies, to_reach: vec![] }
+    // Automatically set nodes to be reached to all defense nodes without outgoing edges
+    pub fn standard_reach(graph: GameGraph) -> Self {
+        let to_reach = (0..graph.n_vertices)
+            .filter(|&v| !graph.attacker_pos[v as usize] && graph.adj[v as usize].is_empty())
+            .collect();
+        Self::with_reach(graph, to_reach)
     }
 
-    pub fn with_reach(mut self, to_reach: Vec<u32>) -> Self {
+    pub fn with_reach(graph: GameGraph, to_reach: Vec<u32>) -> Self {
+        let mut energies = vec![vec![]; graph.n_vertices as usize];
         for v in &to_reach {
-            self.energies[*v as usize].push(Energy::zero());
+            energies[*v as usize].push(Energy::zero());
         }
-        self.to_reach = to_reach;
-        self
+        EnergyGame {
+            graph,
+            energies,
+            to_reach,
+        }
     }
 
     pub async fn get_gpu_runner(&mut self) -> Result<GPURunner> {
@@ -241,7 +263,7 @@ impl DefendShader {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
-            for &w in &game.graph.reverse[v as usize] {
+            for &w in &game.graph.reverse()[v as usize] {
                 if !game.graph.attacker_pos[w as usize] {
                     visit_list.push(w);
                 }
@@ -690,7 +712,7 @@ impl DefendShader {
                 game.energies[cur.node as usize] = new_energies;
 
                 // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse[cur.node as usize] {
+                for &pre in &game.graph.reverse()[cur.node as usize] {
                     //TODO: Prune duplicate entries from both attack and defend shader
                     if game.graph.attacker_pos[pre as usize] {
                         atk_visit_list.push(pre);
@@ -742,7 +764,7 @@ impl AttackShader {
         let mut visit_list: Vec<u32> = Vec::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
-            for &w in &game.graph.reverse[v as usize] {
+            for &w in &game.graph.reverse()[v as usize] {
                 if game.graph.attacker_pos[w as usize] {
                     visit_list.push(w);
                 }
@@ -1068,7 +1090,7 @@ impl AttackShader {
                     .collect();
 
                 // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse[cur.node as usize] {
+                for &pre in &game.graph.reverse()[cur.node as usize] {
                     if game.graph.attacker_pos[pre as usize] {
                         self.visit_list.push(pre);
                     } else {

@@ -1,3 +1,7 @@
+use std::fs::File;
+use std::env;
+use std::io;
+
 use gpuequiv::*;
 
 // Varied, multidimensional updates, leading to multidimensional energies
@@ -31,8 +35,7 @@ fn _multidimensional() -> EnergyGame {
         ],
         &attacker_pos,
     );
-    EnergyGame::from_graph(graph)
-        .with_reach(vec![7, 15])
+    EnergyGame::standard_reach(graph)
 }
 
 fn combinations() -> EnergyGame {
@@ -69,16 +72,37 @@ fn combinations() -> EnergyGame {
         ],
         &attacker_pos,
     );
-    EnergyGame::from_graph(graph)
-        .with_reach(vec![7, 8, 11, 12, 13, 14, 17, 18, 19])
+    EnergyGame::standard_reach(graph)
 }
 
-async fn execute() {
+async fn example() {
     let mut game = combinations();
+    //let f = File::create("graph.json").unwrap();
+    //serde_json::to_writer_pretty(f, &game.graph).unwrap();
     let energies = game.run().await.unwrap();
     println!("{:#?}", energies);
 }
 
-fn main() {
-    pollster::block_on(execute());
+async fn run_json_graph() -> io::Result<()> {
+    let path = env::args_os().nth(1).ok_or(io::Error::new(
+            io::ErrorKind::Other, "Missing path argument"))?;
+    let reader = File::open(path)?;
+    let graph = serde_json::from_reader(&reader)?;
+    let mut game = EnergyGame::standard_reach(graph);
+    let energies = game.run().await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    println!("{:#?}", energies);
+    Ok(()) 
+}
+
+fn main() -> io::Result<()> {
+    let mut args = env::args_os();
+    match args.len() {
+        1 => Ok(pollster::block_on(example())),
+        2 => pollster::block_on(run_json_graph()),
+        _ => {
+            eprintln!("Invalid arguments. Usage: {:?} [file]", args.next().unwrap_or_default());
+            std::process::exit(2);
+        },
+    }
 }
