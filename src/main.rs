@@ -89,8 +89,11 @@ async fn run_json_graph() -> io::Result<()> {
     let reader = File::open(path)?;
     let graph = serde_json::from_reader(&reader)?;
     let mut game = EnergyGame::standard_reach(graph);
-    let energies = game.run().await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    //let energies = game.run().await
+    //    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut runner = game.get_gpu_runner().await.unwrap();
+    runner.execute_gpu().await.unwrap();
+    let energies = game.energies;
     println!("{:#?}", energies);
     Ok(()) 
 }
