@@ -902,7 +902,7 @@ impl AttackShader {
         }
 
         let minima_capacity = Self::minima_size(self.energies.len());
-        if minima_capacity * std::mem::size_of::<u32>() < self.minima_buf.size() as usize {
+        if minima_capacity * std::mem::size_of::<u32>() > self.minima_buf.size() as usize {
             (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(&device, minima_capacity);
         }
 
