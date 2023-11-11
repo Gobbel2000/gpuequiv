@@ -123,11 +123,10 @@ fn inv_update(e: u32, upd: u32) -> u32 {
 fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     let n_nodes = arrayLength(&node_offsets);
     let first_idx = i & (u32(-1i) << 6u); // Index of first element in workgroup
-    let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
-    for (var stride = len_log64; stride > 0u; stride--) {
-        let stride_width = 1u << stride * 6u; // 64**stride
-        let search_offset = wg_node + l_idx * stride_width;
-        let search_max = min(search_offset + stride_width, n_nodes);
+    let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u);
+    for (var stride = 1u << (len_log64 * 6u); stride > 0u; stride >>= 6u) {
+        let search_offset = wg_node + l_idx * stride;
+        let search_max = min(search_offset + stride, n_nodes - 1u);
         if (search_offset <= search_max
             && node_offsets[search_offset].offset <= first_idx
             && first_idx < node_offsets[search_max].offset)
@@ -176,8 +175,9 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
     {
         if i >= successor_offsets[suc] && i < successor_offsets[suc + 1u] {
             // Index of successor in adjacency list as well as weight array
-            let successor_idx = suc - node_offsets[start_node_idx].successor_offsets_idx;
+            let successor_idx = suc - node.successor_offsets_idx;
             update = graph_weights[graph_row_offsets[start_node] + successor_idx];
+            break;
         }
     }
 

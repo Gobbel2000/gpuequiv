@@ -44,18 +44,17 @@ fn less_eq(a: u32, b: u32) -> bool {
 fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
     let n_nodes = arrayLength(&node_offsets);
     let first_idx = i & (u32(-1i) << 6u); // Index of first element in workgroup
-    let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u) + 1u;
-    for (var stride = len_log64; stride > 0u; stride--) {
-        let stride_width = 1u << stride * 6u; // 64**stride
-        let search_offset = wg_node + l_idx * stride_width;
-        let search_max = min(search_offset + stride_width, n_nodes);
+    let len_log64 = (firstLeadingBit(n_nodes - 1u) / 6u);
+    for (var stride = 1u << (len_log64 * 6u); stride > 0u; stride >>= 6u) {
+        let search_offset = wg_node + l_idx * stride;
+        let search_max = min(search_offset + stride, n_nodes - 1u);
         if (search_offset <= search_max
             && node_offsets[search_offset].sup_offset <= first_idx
             && first_idx < node_offsets[search_max].sup_offset)
         {
             wg_node = search_offset;
         }
-        // Ensure wg_node_offset is properly written
+        // Ensure wg_node is properly written
         workgroupBarrier();
     }
 
