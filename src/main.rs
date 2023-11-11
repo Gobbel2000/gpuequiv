@@ -94,7 +94,7 @@ async fn run_json_graph() -> io::Result<()> {
     let mut runner = game.get_gpu_runner().await.unwrap();
     runner.execute_gpu().await.unwrap();
     let energies = game.energies;
-    println!("{:#?}", energies);
+    println!("{:?}", energies);
     Ok(()) 
 }
 

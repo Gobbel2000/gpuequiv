@@ -631,15 +631,8 @@ impl DefendShader {
             cpass.set_bind_group(0, &self.combine_bind_groups[0], &[]);
             cpass.set_bind_group(1, &self.combine_bind_groups[1], &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
-        { // Compute pass for minimizing final suprema
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend minima compute pass"),
-                timestamp_writes: None,
-            });
+
             cpass.set_pipeline(&self.minima_pipeline);
-            cpass.set_bind_group(0, &self.combine_bind_groups[0], &[]);
-            cpass.set_bind_group(1, &self.combine_bind_groups[1], &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         // Copy output to staging buffer
@@ -722,8 +715,6 @@ impl DefendShader {
                 }
             }
         }
-
-        println!("Defend visit list: {:?}", self.visit_list);
 
         // Unmap buffers
         drop(minima_data);
@@ -987,15 +978,8 @@ impl AttackShader {
             cpass.set_bind_group(0, &self.bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
-        }
-        { // Compute pass for minimizing updated energies
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Attack minima compute pass"),
-                timestamp_writes: None,
-            });
+
             cpass.set_pipeline(&self.minima_pipeline);
-            cpass.set_bind_group(0, &self.bind_group, &[]);
-            cpass.set_bind_group(1, graph_bind_group, &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         // Copy output to staging buffer
@@ -1099,8 +1083,6 @@ impl AttackShader {
                 }
             }
         }
-
-        println!("Attack visit list: {:?}", self.visit_list);
 
         // Unmap buffers
         drop(minima_data);
@@ -1242,9 +1224,9 @@ impl<'a> GPURunner<'a> {
     }
 
     pub async fn execute_gpu(&mut self) -> Result<()> {
-        println!("Attack visit list: {:?}", self.atk_shader.visit_list);
-        println!("Defend visit list: {:?}", self.def_shader.visit_list);
         loop {
+            println!("Attack visit list: {:?}", self.atk_shader.visit_list);
+            println!("Defend visit list: {:?}", self.def_shader.visit_list);
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
