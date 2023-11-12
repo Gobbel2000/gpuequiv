@@ -69,7 +69,7 @@ unsafe impl bytemuck::Zeroable for Energy {}
 unsafe impl bytemuck::Pod for Energy {}
 
 
-#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(into = "i8", from = "i8")]
 pub enum Upd {
     #[default]
@@ -89,6 +89,13 @@ impl fmt::Display for Upd {
 }
 
 impl From<i8> for Upd {
+    /// Update elements can be easily represented by integers:
+    ///
+    /// -1 => Decrement update
+    /// 0  => No update
+    /// 1  => Min update between current position and first position
+    /// 2  => Min update between current position and second position
+    /// etc.
     fn from(n: i8) -> Upd {
         match n {
             0 => Upd::Zero,
@@ -111,7 +118,7 @@ impl From<Upd> for i8 {
 
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(into = "Vec<Upd>", from = "Vec<Upd>")]
 pub struct Update(pub u32);
 
@@ -147,8 +154,8 @@ impl From<&[Upd]> for Update {
                 Upd::Zero => 0,
                 Upd::Decrement => 1,
                 Upd::Min(idx) => {
-                    assert!(*idx <= 13, "Min update indices must be at most 13");
-                    *idx as u32 + 2
+                    assert!(*idx <= 14, "Min update indices must be at most 14");
+                    *idx as u32 + 1
                 },
             };
             data |= encoded << shift;
@@ -179,7 +186,7 @@ impl From<&Update> for Vec<Upd> {
             vec.push(match shifted & 0xf {
                 0 => Upd::Zero,
                 1 => Upd::Decrement,
-                idx => Upd::Min(idx as u8 - 2),
+                idx => Upd::Min(idx as u8 - 1),
             });
             shifted >>= 4;
             if shifted == 0 {
@@ -209,3 +216,68 @@ impl fmt::Debug for Update {
 // Enable bytemucking for filling buffers
 unsafe impl bytemuck::Zeroable for Update {}
 unsafe impl bytemuck::Pod for Update {}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    #[test]
+    fn test_energy() {
+        assert_eq!(Energy::default(), Energy::zero());
+        assert_eq!(Energy::zero().0, 0);
+        assert_eq!(Energy::zeroed(), Energy::zero(), "Zeroable trait from bytemuck");
+        assert_eq!(Energy::from(23409).0, 23409);
+
+        let parts = vec![0, 3, 1, 0, 2];
+        let energy = Energy::from(parts.as_slice());
+        assert_eq!(energy, energy![0, 3, 1, 0, 2]);
+        assert_eq!(energy, energy![0, 3, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(energy.0, 0x21c, "Bitpacked value: each element is 2 bits wide");
+    }
+
+    #[test]
+    fn test_upd() {
+        assert_eq!(Upd::default(), Upd::Zero); 
+        assert_eq!(Upd::from(0), Upd::Zero);
+        assert_eq!(Upd::from(-1), Upd::Decrement);
+        assert_eq!(Upd::from(1), Upd::Min(1));
+        assert_eq!(Upd::from(8), Upd::Min(8));
+
+        assert_eq!(i8::from(Upd::Zero), 0);
+        assert_eq!(i8::from(Upd::Decrement), -1);
+        assert_eq!(i8::from(Upd::Min(1)), 1);
+        assert_eq!(i8::from(Upd::Min(8)), 8);
+    }
+
+    #[test]
+    fn test_update() {
+        assert_eq!(Update::default(), Update::zero());
+        assert_eq!(Update::zero().0, 0);
+        assert_eq!(Update::zeroed(), Update::zero(), "Zeroable trait from bytemuck");
+        assert_eq!(Update::from(1528).0, 1528); 
+
+        let parts = vec![Upd::Zero, Upd::Decrement, Upd::Min(1), Upd::Min(8)];
+        let update = Update::from(parts.as_slice());
+        assert_eq!(update, Update::from(parts.clone()));
+        assert_eq!(update, update![0, -1, 1, 8]);
+        assert_eq!(update, update![Upd::default(), -1, 1, Upd::Min(8)]);
+        assert_eq!(update, update![0, -1, 1, 8, 0, 0, 0, 0], "Trailing zeros don't change the value");
+        assert_eq!(update.0, 0x9210, "Bit representation: Min(8) -> 0x9, Min(1) -> 0x2, -1 -> 1, 0 -> 0");
+        assert_eq!(Vec::<Upd>::from(update), parts, "Disassemble Update into Vec<Upd>");
+    }
+
+    #[test]
+    fn update_serde() {
+        let parts = vec![Upd::Zero, Upd::Decrement, Upd::Min(1), Upd::Min(8)];
+        let update = Update::from(parts.as_slice());
+        assert_eq!(update, serde_json::from_str("[0, -1, 1, 8]").unwrap(), "Deserialization from JSON");
+        assert_eq!(serde_json::to_string(&update).unwrap(), "[0,-1,1,8]", "Serialization into JSON");
+
+        assert_eq!(Update::zero(), serde_json::from_str("[]").unwrap(), "Deserialize empty list");
+        assert_eq!(Update::zero(), serde_json::from_str("[0]").unwrap());
+        assert_eq!(Update::zero(), serde_json::from_str("[0, 0]").unwrap());
+        assert_eq!(serde_json::to_string(&Update::zero()).unwrap(), "[0]", "Serialization of empty update");
+    }
+}
