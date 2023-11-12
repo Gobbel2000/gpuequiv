@@ -8,6 +8,8 @@ use std::iter;
 use std::rc::Rc;
 
 use futures_intrusive::channel::shared::{Sender, channel};
+use log::Level::Trace;
+use log::{trace, log_enabled};
 use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
@@ -600,7 +602,7 @@ impl DefendShader {
             energy_offset: energies_count,
             sup_offset: sup_count,
         });
-        println!("Defend data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
+        trace!("Defend data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
         Ok((node_offsets, successor_offsets, energies))
     }
@@ -671,17 +673,17 @@ impl DefendShader {
     fn process_results(&mut self, atk_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
-
-        print!("Defend Minima:    ");
-        for minima_chunk in minima {
-            print!("{:064b} ", minima_chunk.reverse_bits());
-        }
-        println!("");
-
         let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
         let suprema: Vec<Energy> = bytemuck::cast_slice(&sup_data).to_vec();
 
-        println!("Defend Suprema: {:?}", suprema);
+        if log_enabled!(Trace) {
+            let mut msg = "Defend Minima:   ".to_string();
+            for minima_chunk in minima {
+                msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
+            }
+            trace!("{}", msg);
+            trace!("Defend Suprema: {:?}", suprema);
+        }
 
         const MINIMA_SIZE: usize = 64;
 
@@ -962,7 +964,7 @@ impl AttackShader {
             offset: count,
             successor_offsets_idx: successor_offsets_count,
         });
-        println!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
+        trace!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
         Ok((node_offsets, successor_offsets, energies))
     }
 
@@ -1005,17 +1007,17 @@ impl AttackShader {
     fn process_results(&mut self, def_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
-
-        print!("Attack Minima:    ");
-        for minima_chunk in minima {
-            print!("{:064b} ", minima_chunk.reverse_bits());
-        }
-        println!("");
-
         let energies_data = self.energies_staging_buf.slice(..).get_mapped_range();
         let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
 
-        println!("Attack Energies: {:?}", energies);
+        if log_enabled!(Trace) {
+            let mut msg = "Attack Minima:    ".to_string();
+            for minima_chunk in minima {
+                msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
+            }
+            trace!("{}", msg);
+            trace!("Attack Energies: {:?}", energies);
+        }
 
         const MINIMA_SIZE: u32 = 64;
 
@@ -1025,7 +1027,7 @@ impl AttackShader {
             let width = next_offset - cur.offset;
             let n_prev = game.energies[cur.node as usize].len() as u32;
             let n_new = width - n_prev;
-            assert!(n_prev <= width);
+            debug_assert!(n_prev <= width);
 
             let mut changed = false;
             // If energies didn't change, all newly compared energies will be filtered out
@@ -1225,8 +1227,8 @@ impl<'a> GPURunner<'a> {
 
     pub async fn execute_gpu(&mut self) -> Result<()> {
         loop {
-            println!("Attack visit list: {:?}", self.atk_shader.visit_list);
-            println!("Defend visit list: {:?}", self.def_shader.visit_list);
+            trace!("Attack visit list: {:?}", self.atk_shader.visit_list);
+            trace!("Defend visit list: {:?}", self.def_shader.visit_list);
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });

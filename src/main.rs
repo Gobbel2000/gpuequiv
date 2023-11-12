@@ -99,6 +99,7 @@ async fn run_json_graph() -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    env_logger::init();
     let mut args = env::args_os();
     match args.len() {
         1 => Ok(pollster::block_on(example())),
