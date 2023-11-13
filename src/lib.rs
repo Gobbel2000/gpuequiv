@@ -229,7 +229,7 @@ trait PlayerShader {
 
 struct DefendShader {
     gpu: Rc<GPUCommon>,
-    visit_list: Vec<u32>,
+    visit_list: HashSet<u32>,
 
     energies: Vec<Energy>,
     energies_buf: Buffer,
@@ -262,12 +262,12 @@ impl DefendShader {
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Result<DefendShader> {
-        let mut visit_list: Vec<u32> = Vec::new();
+        let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
             for &w in &game.graph.reverse()[v as usize] {
                 if !game.graph.attacker_pos[w as usize] {
-                    visit_list.push(w);
+                    visit_list.insert(w);
                 }
             }
         }
@@ -556,7 +556,7 @@ impl DefendShader {
     }
 
     fn collect_data(
-        visit_list: &[u32],
+        visit_list: &HashSet<u32>,
         game: &EnergyGame,
     ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, Vec<Energy>)> {
         let mut energies = Vec::new();
@@ -670,7 +670,7 @@ impl DefendShader {
         true
     }
 
-    fn process_results(&mut self, atk_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
+    fn process_results(&mut self, atk_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
         let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
@@ -708,11 +708,10 @@ impl DefendShader {
 
                 // Winning budgets have improved, check predecessors in next iteration
                 for &pre in &game.graph.reverse()[cur.node as usize] {
-                    //TODO: Prune duplicate entries from both attack and defend shader
                     if game.graph.attacker_pos[pre as usize] {
-                        atk_visit_list.push(pre);
+                        atk_visit_list.insert(pre);
                     } else {
-                        self.visit_list.push(pre);
+                        self.visit_list.insert(pre);
                     }
                 }
             }
@@ -728,7 +727,7 @@ impl DefendShader {
 
 struct AttackShader {
     gpu: Rc<GPUCommon>,
-    visit_list: Vec<u32>,
+    visit_list: HashSet<u32>,
     energies: Vec<Energy>,
     energies_buf: Buffer,
     energies_staging_buf: Buffer,
@@ -754,12 +753,12 @@ impl AttackShader {
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Result<AttackShader> {
-        let mut visit_list: Vec<u32> = Vec::new();
+        let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
             for &w in &game.graph.reverse()[v as usize] {
                 if game.graph.attacker_pos[w as usize] {
-                    visit_list.push(w);
+                    visit_list.insert(w);
                 }
             }
         }
@@ -925,7 +924,7 @@ impl AttackShader {
     }
 
     fn collect_data(
-        visit_list: &[u32],
+        visit_list: &HashSet<u32>,
         game: &EnergyGame
     ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, Vec<Energy>)> {
         let mut energies = Vec::new();
@@ -1004,7 +1003,7 @@ impl AttackShader {
         });
     }
 
-    fn process_results(&mut self, def_visit_list: &mut Vec<u32>, game: &mut EnergyGame) {
+    fn process_results(&mut self, def_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
         let energies_data = self.energies_staging_buf.slice(..).get_mapped_range();
@@ -1078,9 +1077,9 @@ impl AttackShader {
                 // Winning budgets have improved, check predecessors in next iteration
                 for &pre in &game.graph.reverse()[cur.node as usize] {
                     if game.graph.attacker_pos[pre as usize] {
-                        self.visit_list.push(pre);
+                        self.visit_list.insert(pre);
                     } else {
-                        def_visit_list.push(pre);
+                        def_visit_list.insert(pre);
                     }
                 }
             }

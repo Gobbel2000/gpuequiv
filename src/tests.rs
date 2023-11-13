@@ -222,6 +222,6 @@ fn wide(single: u32, double: u32) -> (EnergyGame, Vec<Vec<Energy>>) {
 
 #[pollster::test]
 async fn wide_game() {
-    let (mut game, expected) = wide(150, 14);
+    let (mut game, expected) = wide(4100, 14);
     assert_eq!(game.run().await.unwrap(), expected);
 }
