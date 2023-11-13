@@ -183,3 +183,45 @@ async fn combinations() {
         ]
     );
 }
+
+
+// Create a very regular graph with adjustable size to test correctness of larger inputs.
+//
+// `single` is the number of 2-deep paths that extend from the root node.
+// `double` is the number of subtrees under the root node that split into two leaf nodes at depth
+// 2. Each of these double subtrees create 2 incomparable energy tuples, causing the root node
+// (which is a defense node) to double the necessary number of combinations. Thus, `double` should
+// be set very carefully, because the root node will have to perform 2**double combinations.
+fn wide(single: u32, double: u32) -> (EnergyGame, Vec<Vec<Energy>>) {
+    let n_nodes = 2 * single + 3 * double + 1;
+    let mut edges = Vec::with_capacity(n_nodes as usize - 1);
+    let mut attacker_pos = vec![false; n_nodes as usize];
+    let mut expected = vec![vec![Energy::zero()]; n_nodes as usize];
+    expected[0] = vec![energy![1, 1, 2], energy![1, 1, 1, 1]];
+    for i in 1..=single {
+        edges.push((0, i, update![Upd::Min(2)]));
+        edges.push((i, i + single, update![-1]));
+        attacker_pos[i as usize] = true;
+        expected[i as usize] = vec![energy![1]];
+    }
+    for i in 1..=double {
+        edges.push((0, 2*single + i, update![0, 0, -1]));
+        edges.push((2*single + i, 2*single + double + i, update![0, 0, -1]));
+        edges.push((2*single + i, 2*single + double + i + 1, update![0, 0, 0, -1]));
+        attacker_pos[(2*single + i) as usize] = true;
+        expected[(2*single + i) as usize] = vec![energy![0, 0, 1], energy![0, 0, 0, 1]];
+    }
+    let graph = GameGraph::new(
+        n_nodes,
+        &edges,
+        &attacker_pos,
+    );
+
+    (EnergyGame::standard_reach(graph), expected)
+}
+
+#[pollster::test]
+async fn wide_game() {
+    let (mut game, expected) = wide(150, 14);
+    assert_eq!(game.run().await.unwrap(), expected);
+}
