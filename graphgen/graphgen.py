@@ -19,7 +19,7 @@ def random_update():
         val = -1
     else:
         # Min-update with element at index `val`
-        val = random.randrange(UPDATE_LEN - 1)
+        val = random.randrange(1, UPDATE_LEN)
         if val >= pos:
             val += 1
     update[pos] = val
