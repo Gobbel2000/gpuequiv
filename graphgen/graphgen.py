@@ -9,6 +9,7 @@ import networkx as nx
 
 DEFAULT_NODES = 100
 UPDATE_LEN = 6
+ENERGY_CONF = {"elements": UPDATE_LEN, "max": 3}
 
 def random_update():
     update = [0] * UPDATE_LEN
@@ -33,7 +34,7 @@ def format_graph(G: nx.DiGraph) -> dict[str, Any]:
         weights.append([random_update() for _ in range(len(node_adj))])
     attacker_pos = random.choices([False, True], k=n_vertices)
     return {
-        "n_vertices": n_vertices,
+        "conf": ENERGY_CONF,
         "adj": adj,
         "weights": weights,
         "attacker_pos": attacker_pos,
