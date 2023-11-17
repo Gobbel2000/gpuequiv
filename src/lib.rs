@@ -1,7 +1,6 @@
 pub mod energy;
 
 use std::borrow::Cow;
-use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::{fmt, error, result};
 use std::iter;
@@ -11,7 +10,7 @@ use futures_intrusive::channel::shared::{Sender, channel};
 use log::Level::Trace;
 use log::{trace, log_enabled};
 use ndarray::{Array2, Axis};
-//use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
 
@@ -26,12 +25,76 @@ const WORKGROUP_SIZE: u32 = 64;
 // Buffers with size 0 are not allowed.
 const INITIAL_CAPACITY: usize = 64;
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize)]
+struct SerdeGameGraph {
+    conf: EnergyConf,
+    adj: Vec<Vec<u32>>,
+    weights: Vec<Vec<Vec<i32>>>,
+    attacker_pos: Vec<bool>,
+}
+
+impl From<GameGraph> for SerdeGameGraph {
+    fn from(graph: GameGraph) -> Self {
+        let weights = graph.weights.iter().map(|array| array.into())
+            .collect();
+        Self {
+            conf: graph.conf,
+            adj: graph.adj,
+            weights,
+            attacker_pos: graph.attacker_pos,
+        }
+    }
+}
+
+impl TryFrom<SerdeGameGraph> for GameGraph {
+    type Error = &'static str;
+    fn try_from(deserialized: SerdeGameGraph) -> std::result::Result<Self, Self::Error> {
+        let n_vertices = deserialized.adj.len();
+        if deserialized.weights.len() != n_vertices {
+            return Err("Weight list size doesn't match adjacecy list size");
+        }
+        if deserialized.attacker_pos.len() != n_vertices {
+            return Err("attacker_pos list has wrong length");
+        }
+        for (successors, weights) in deserialized.adj.iter().zip(&deserialized.weights) {
+            if successors.len() != weights.len() {
+                return Err("Out-degree in adjacency list doesn't match out-degree in weight list");
+            }
+            if !successors.iter().all(|&s| (s as usize) < n_vertices) {
+                return Err("Node index too high");
+            }
+        }
+
+        let reverse = make_reverse(&deserialized.adj);
+        let weights: std::result::Result<Vec<UpdateArray>, Self::Error> = deserialized.weights
+            .iter()
+            .map(|list| UpdateArray::from_conf(list.as_slice(), deserialized.conf))
+            .collect();
+        Ok(GameGraph {
+            reverse,
+            adj: deserialized.adj,
+            weights: weights?,
+            attacker_pos: deserialized.attacker_pos,
+            conf: deserialized.conf,
+        })
+    }
+}
+
+fn make_reverse(adj: &Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+    let mut reverse = vec![vec![]; adj.len()];
+    for (from, adj) in adj.iter().enumerate() {
+        for to in adj {
+            reverse[*to as usize].push(from as u32);
+        }
+    }
+    reverse
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "SerdeGameGraph", into = "SerdeGameGraph")]
 pub struct GameGraph {
-    pub n_vertices: u32,
     pub adj: Vec<Vec<u32>>,
-    //#[serde(skip)]
-    adj_reverse: OnceCell<Vec<Vec<u32>>>,
+    pub reverse: Vec<Vec<u32>>,
     // One weight per edge, grouped by start node
     pub weights: Vec<UpdateArray>,
     pub attacker_pos: Vec<bool>,
@@ -64,25 +127,16 @@ impl GameGraph {
             .collect();
 
         Self {
-            n_vertices,
             adj,
-            adj_reverse: reverse.into(),
+            reverse: reverse.into(),
             weights,
             attacker_pos: attacker_pos.to_vec(),
             conf,
         }
     }
 
-    pub fn reverse(&self) -> &Vec<Vec<u32>> {
-        self.adj_reverse.get_or_init(|| {
-            let mut reverse = vec![vec![]; self.n_vertices as usize];
-            for (from, adj) in self.adj.iter().enumerate() {
-                for to in adj {
-                    reverse[*to as usize].push(from as u32);
-                }
-            }
-            reverse
-        })
+    pub fn n_vertices(&self) -> u32 {
+        self.adj.len() as u32
     }
 
     fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u8>) {
@@ -124,14 +178,14 @@ impl EnergyGame {
 
     // Automatically set nodes to be reached to all defense nodes without outgoing edges
     pub fn standard_reach(graph: GameGraph) -> Self {
-        let to_reach = (0..graph.n_vertices)
+        let to_reach = (0..graph.n_vertices())
             .filter(|&v| !graph.attacker_pos[v as usize] && graph.adj[v as usize].is_empty())
             .collect();
         Self::with_reach(graph, to_reach)
     }
 
     pub fn with_reach(graph: GameGraph, to_reach: Vec<u32>) -> Self {
-        let mut energies = vec![EnergyArray::zero(0, graph.get_conf()); graph.n_vertices as usize];
+        let mut energies = vec![EnergyArray::zero(0, graph.get_conf()); graph.n_vertices() as usize];
         for v in &to_reach {
             energies[*v as usize] = EnergyArray::zero(1, graph.get_conf());
         }
@@ -291,7 +345,7 @@ impl DefendShader {
         let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
-            for &w in &game.graph.reverse()[v as usize] {
+            for &w in &game.graph.reverse[v as usize] {
                 if !game.graph.attacker_pos[w as usize] {
                     visit_list.insert(w);
                 }
@@ -724,7 +778,7 @@ impl DefendShader {
                 game.energies[cur.node as usize] = new_energies;
 
                 // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse()[cur.node as usize] {
+                for &pre in &game.graph.reverse[cur.node as usize] {
                     if game.graph.attacker_pos[pre as usize] {
                         atk_visit_list.insert(pre);
                     } else {
@@ -773,7 +827,7 @@ impl AttackShader {
         let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
-            for &w in &game.graph.reverse()[v as usize] {
+            for &w in &game.graph.reverse[v as usize] {
                 if game.graph.attacker_pos[w as usize] {
                     visit_list.insert(w);
                 }
@@ -1097,7 +1151,7 @@ impl AttackShader {
                 game.energies[cur.node as usize] = EnergyArray::from_array(new_array, game.graph.get_conf());
 
                 // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse()[cur.node as usize] {
+                for &pre in &game.graph.reverse[cur.node as usize] {
                     if game.graph.attacker_pos[pre as usize] {
                         self.visit_list.insert(pre);
                     } else {

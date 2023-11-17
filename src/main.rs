@@ -81,15 +81,14 @@ fn combinations() -> EnergyGame {
 
 async fn example() {
     let mut game = combinations();
-    //let f = File::create("graph.json").unwrap();
-    //serde_json::to_writer_pretty(f, &game.graph).unwrap();
+    let f = File::create("graph.json").unwrap();
+    serde_json::to_writer_pretty(f, &game.graph).unwrap();
     let energies = game.run().await.unwrap();
     for node in energies {
         println!("{}", node);
     }
 }
 
-/*
 async fn run_json_graph() -> io::Result<()> {
     let path = env::args_os().nth(1).ok_or(io::Error::new(
             io::ErrorKind::Other, "Missing path argument"))?;
@@ -98,16 +97,18 @@ async fn run_json_graph() -> io::Result<()> {
     let mut game = EnergyGame::standard_reach(graph);
     let energies = game.run().await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    println!("{:?}", energies);
+    for node in energies {
+        println!("{}", node);
+    }
     Ok(()) 
-}*/
+}
 
 fn main() -> io::Result<()> {
     env_logger::init();
     let mut args = env::args_os();
     match args.len() {
         1 => Ok(pollster::block_on(example())),
-        2 => Ok(()), //pollster::block_on(run_json_graph()),
+        2 => pollster::block_on(run_json_graph()),
         _ => {
             eprintln!("Invalid arguments. Usage: {:?} [file]", args.next().unwrap_or_default());
             std::process::exit(2);

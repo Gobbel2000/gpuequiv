@@ -2,6 +2,7 @@ use std::fmt;
 use std::collections::HashSet;
 
 use ndarray::{Array2, ArrayView2, ArrayView1, aview1};
+use serde::{Serialize, Deserialize};
 
 macro_rules! fn_get_conf {
     () => {
@@ -31,7 +32,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnergyConf {
     elements: u32,
     max: u32,
@@ -41,7 +42,6 @@ impl EnergyConf {
     pub const STANDARD: Self = EnergyConf{ elements: 6, max: 3 };
     // Number of u32's required to store all elements
     pub fn energy_size(&self) -> u32 {
-        //TODO: Avoid fields crossing word boundaries. Either constrict fields to powers of two
         //sizes or add padding at the end of each word.
         let bits = self.energy_bits() * self.elements;
         bits.div_ceil(u32::BITS)
@@ -49,11 +49,12 @@ impl EnergyConf {
 
     // Number of bits required to store one element
     pub fn energy_bits(&self) -> u32 {
-        u32::BITS - self.max.leading_zeros()
+        (u32::BITS - self.max.leading_zeros())
+            .next_power_of_two()
     }
 
     pub fn energy_mask(&self) -> u32 {
-        u32::MAX >> self.max.leading_zeros()
+        u32::MAX >> (u32::BITS - self.energy_bits())
     }
 
     pub fn update_size(&self) -> u32 {
@@ -62,11 +63,12 @@ impl EnergyConf {
     }
 
     pub fn update_bits(&self) -> u32 {
-        u32::BITS - (self.elements + 2).leading_zeros()
+        (u32::BITS - (self.elements + 2).leading_zeros())
+            .next_power_of_two()
     }
 
     pub fn update_mask(&self) -> u32 {
-        u32::MAX >> (self.elements + 2).leading_zeros()
+        u32::MAX >> (u32::BITS - self.update_bits())
     }
 }
 
@@ -428,8 +430,8 @@ fn pack_upd(values: &[Upd], conf: EnergyConf) -> Option<Vec<u32>> {
             }
         }
         update[word] |= val.packed_repr() << shift;    
-        shift += conf.energy_bits();
-        if shift + conf.energy_bits() > u32::BITS {
+        shift += conf.update_bits();
+        if shift + conf.update_bits() > u32::BITS {
             shift = 0;
             word += 1;
         }
@@ -463,6 +465,14 @@ impl From<&Update> for Vec<Upd> {
 impl From<Update> for Vec<Upd> {
     fn from(update: Update) -> Vec<Upd> {
         (&update).into()
+    }
+}
+
+impl From<&Update> for Vec<i32> {
+    fn from(update: &Update) -> Vec<i32> {
+        let upd_vec: Vec<Upd> = update.into();
+        upd_vec.iter().map(|&upd| upd.into())
+            .collect()
     }
 }
 
@@ -529,6 +539,16 @@ impl UpdateArray {
         self.array
     }
 
+    pub fn n_updates(&self) -> usize {
+        self.array.nrows()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item=Update> + '_ {
+        self.array.rows().into_iter().map(|row|
+            Update::from_raw_data(row.as_slice()
+            .expect("Array should be contiguous and in standard layout"), self.conf))
+    }
+
     /// Constructs an UpdateArray struct from array data.
     /// Care must be taken to only provide valid data. This function does not check whether the
     /// data in the array adheres to conf.max and whether all padding bits are zeroed.
@@ -541,6 +561,19 @@ impl UpdateArray {
     }
 
     fn_get_conf!();
+}
+
+impl From<UpdateArray> for Vec<Update> {
+    fn from(array: UpdateArray) -> Vec<Update> {
+        array.iter().collect()
+    }
+}
+
+impl From<&UpdateArray> for Vec<Vec<i32>> {
+    fn from(array: &UpdateArray) -> Vec<Vec<i32>> {
+        array.iter().map(|update| (&update).into())
+            .collect()
+    }
 }
 
 impl TryFrom<&[Update]> for UpdateArray {
@@ -581,7 +614,7 @@ impl FromEnergyConf<&[Vec<Upd>]> for UpdateArray {
     fn from_conf(updates: &[Vec<Upd>], conf: EnergyConf) -> Result<Self, Self::Error> {
         let mut array = Array2::zeros((updates.len(), conf.update_size() as usize));
         for (mut row, upds) in array.rows_mut().into_iter().zip(updates) {
-            let packed = pack_upd(upds, conf).ok_or("Updates dont' match configuration")?;
+            let packed = pack_upd(upds, conf).ok_or("Updates don't match configuration")?;
             row.assign(&aview1(&packed));
         }
         Ok(Self { array, conf })
