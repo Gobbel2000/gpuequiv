@@ -11,6 +11,7 @@ wgpu = "0.18"
 log = "0.4"
 bytemuck = "1.14"
 futures-intrusive = "0.5"
+ndarray = "0.15"
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

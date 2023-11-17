@@ -4,6 +4,7 @@ use std::io;
 
 use gpuequiv::*;
 
+/*
 // Varied, multidimensional updates, leading to multidimensional energies
 fn _multidimensional() -> EnergyGame {
     let attacker_pos: Vec<bool> = (0..18)
@@ -37,14 +38,16 @@ fn _multidimensional() -> EnergyGame {
     );
     EnergyGame::standard_reach(graph)
 }
+*/
 
 fn combinations() -> EnergyGame {
+    let conf = EnergyConf::STANDARD;
     let attacker_pos: Vec<bool> = (0..20)
         .map(|i| [1, 2, 3, 4, 6, 10, 16].contains(&i))
         .collect();
     let graph = GameGraph::new(
         20,
-        &[
+        vec![
             (0, 1, update![-1]),
             (0, 2, update![0, -1]),
             (0, 3, update![0, 0, 0, -1]),
@@ -71,6 +74,7 @@ fn combinations() -> EnergyGame {
             (4, 19, update![0, 0, 0, 0, 0, -1]),
         ],
         &attacker_pos,
+        conf,
     );
     EnergyGame::standard_reach(graph)
 }
@@ -83,6 +87,7 @@ async fn example() {
     println!("{:#?}", energies);
 }
 
+/*
 async fn run_json_graph() -> io::Result<()> {
     let path = env::args_os().nth(1).ok_or(io::Error::new(
             io::ErrorKind::Other, "Missing path argument"))?;
@@ -93,14 +98,14 @@ async fn run_json_graph() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     println!("{:?}", energies);
     Ok(()) 
-}
+}*/
 
 fn main() -> io::Result<()> {
     env_logger::init();
     let mut args = env::args_os();
     match args.len() {
         1 => Ok(pollster::block_on(example())),
-        2 => pollster::block_on(run_json_graph()),
+        2 => Ok(()), //pollster::block_on(run_json_graph()),
         _ => {
             eprintln!("Invalid arguments. Usage: {:?} [file]", args.next().unwrap_or_default());
             std::process::exit(2);

@@ -1,4 +1,4 @@
-mod types;
+pub mod energy;
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -10,11 +10,15 @@ use std::rc::Rc;
 use futures_intrusive::channel::shared::{Sender, channel};
 use log::Level::Trace;
 use log::{trace, log_enabled};
-use serde::{Serialize, Deserialize};
+use ndarray::{Array2, Axis};
+//use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device, Queue};
 use wgpu::util::DeviceExt;
 
-pub use crate::types::{Energy, Update, Upd};
+pub use crate::energy::{
+    EnergyConf, EnergyArray, Energy, UpdateArray, Update, Upd,
+    IntoEnergyConf, FromEnergyConf,
+};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
@@ -22,26 +26,42 @@ const WORKGROUP_SIZE: u32 = 64;
 // Buffers with size 0 are not allowed.
 const INITIAL_CAPACITY: usize = 64;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GameGraph {
     pub n_vertices: u32,
     pub adj: Vec<Vec<u32>>,
-    #[serde(skip)]
+    //#[serde(skip)]
     adj_reverse: OnceCell<Vec<Vec<u32>>>,
-    pub weights: Vec<Vec<Update>>,
+    // One weight per edge, grouped by start node
+    pub weights: Vec<UpdateArray>,
     pub attacker_pos: Vec<bool>,
+    conf: EnergyConf,
 }
 
 impl GameGraph {
-    pub fn new(n_vertices: u32, edges: &[(u32, u32, Update)], attacker_pos: &[bool]) -> Self {
+    pub fn new<T>(
+        n_vertices: u32,
+        edges: Vec<(u32, u32, T)>,
+        attacker_pos: &[bool],
+        conf: EnergyConf,
+    ) -> Self 
+    where
+        // Accept any type T for weights that can be turned into a row of an UpdateArray
+        for<'a> UpdateArray: FromEnergyConf<&'a [T]>,
+        T: Clone,
+    {
         let mut adj = vec![vec![]; n_vertices as usize];
         let mut reverse = vec![vec![]; n_vertices as usize];
-        let mut weights = vec![vec![]; n_vertices as usize];
+        let mut raw_weights = vec![vec![]; n_vertices as usize];
         for (from, to, e) in edges {
-            adj[*from as usize].push(*to);
-            reverse[*to as usize].push(*from);
-            weights[*from as usize].push(*e);
+            adj[from as usize].push(to);
+            reverse[to as usize].push(from);
+            raw_weights[from as usize].push(e);
         }
+        let weights = raw_weights.iter().map(|upd_list| {
+                UpdateArray::from_conf(upd_list.as_slice(), conf).unwrap()
+            })
+            .collect();
 
         Self {
             n_vertices,
@@ -49,6 +69,7 @@ impl GameGraph {
             adj_reverse: reverse.into(),
             weights,
             attacker_pos: attacker_pos.to_vec(),
+            conf,
         }
     }
 
@@ -64,15 +85,15 @@ impl GameGraph {
         })
     }
 
-    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u8>) {
         let column_indices = self.adj.iter()
             .flatten()
             .copied()
             .collect();
         let weights = self.weights.iter()
+            .map(|e| e.data())
             .flatten()
             .copied()
-            .map(|e| e.0)
             .collect();
         // Cumulative sum of all list lengths. 0 is prepended manually
         let row_offsets = iter::once(0).chain(
@@ -84,13 +105,18 @@ impl GameGraph {
             .collect();
         (column_indices, row_offsets, weights)
     }
+
+    pub fn get_conf(&self) -> EnergyConf {
+        self.conf
+    }
 }
 
 
 #[derive(Debug, Clone)]
 pub struct EnergyGame {
     pub graph: GameGraph,
-    pub energies: Vec<Vec<Energy>>,
+    // One array of energies for each node
+    pub energies: Vec<EnergyArray>,
     pub to_reach: Vec<u32>,
 }
 
@@ -105,9 +131,9 @@ impl EnergyGame {
     }
 
     pub fn with_reach(graph: GameGraph, to_reach: Vec<u32>) -> Self {
-        let mut energies = vec![vec![]; graph.n_vertices as usize];
+        let mut energies = vec![EnergyArray::zero(0, graph.get_conf()); graph.n_vertices as usize];
         for v in &to_reach {
-            energies[*v as usize].push(Energy::zero());
+            energies[*v as usize] = EnergyArray::zero(1, graph.get_conf());
         }
         EnergyGame {
             graph,
@@ -120,7 +146,7 @@ impl EnergyGame {
         GPURunner::with_game(self).await
     }
 
-    pub async fn run(&mut self) -> Result<&[Vec<Energy>]> {
+    pub async fn run(&mut self) -> Result<&[EnergyArray]> {
         let mut runner = self.get_gpu_runner().await?;
         runner.execute_gpu().await
             // Return final energy table
@@ -169,7 +195,7 @@ trait PlayerShader {
     }
 
     // Construct buffer for energies
-    fn get_energies_buf(device: &Device, energies: &[Energy]) -> Buffer {
+    fn get_energies_buf(device: &Device, energies: &EnergyArray) -> Buffer {
         if energies.is_empty() {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Energies storage buffer empty", Self::name())),
@@ -180,7 +206,7 @@ trait PlayerShader {
         } else {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Energies storage buffer", Self::name())),
-                contents: bytemuck::cast_slice(&energies),
+                contents: energies.data(),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             })
         }
@@ -231,7 +257,7 @@ struct DefendShader {
     gpu: Rc<GPUCommon>,
     visit_list: HashSet<u32>,
 
-    energies: Vec<Energy>,
+    energies: EnergyArray,
     energies_buf: Buffer,
     node_offsets: Vec<NodeOffsetDef>,
     node_offsets_buf: Buffer,
@@ -452,10 +478,11 @@ impl DefendShader {
         let queue = &self.gpu.queue;
         let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game)?;
 
-        if !buffer_fits(&energies, &self.energies_buf) {
+        //if !buffer_fits(&energies, &self.energies_buf) {
+        if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
             self.energies_buf = Self::get_energies_buf(&device, &energies);
         } else {
-            queue.write_buffer(&self.energies_buf, 0, bytemuck::cast_slice(&energies));
+            queue.write_buffer(&self.energies_buf, 0, energies.data());
         }
         self.energies = energies;
 
@@ -558,8 +585,8 @@ impl DefendShader {
     fn collect_data(
         visit_list: &HashSet<u32>,
         game: &EnergyGame,
-    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, Vec<Energy>)> {
-        let mut energies = Vec::new();
+    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
+        let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
         let mut successor_offsets_count = 0;
         let mut node_offsets = Vec::new();
@@ -582,8 +609,8 @@ impl DefendShader {
             });
             let mut cur_sup_count: u32 = 1;
             for &successor in &game.graph.adj[snode] {
-                let successor_energies = &game.energies[successor as usize];
-                energies.extend(successor_energies);
+                let successor_energies = game.energies[successor as usize].view();
+                energies.append(Axis(0), successor_energies).unwrap();
                 successor_offsets.push(energies_count);
                 energies_count = energies_count.checked_add(successor_energies.len() as u32)
                     .ok_or(Error::Overflow)?;
@@ -604,7 +631,8 @@ impl DefendShader {
         });
         trace!("Defend data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
 
-        Ok((node_offsets, successor_offsets, energies))
+        Ok((node_offsets, successor_offsets,
+            EnergyArray::from_array(energies, game.graph.get_conf())))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -617,7 +645,7 @@ impl DefendShader {
             cpass.set_bind_group(0, &self.update_bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
 
-            let n_energies = self.energies.len() as u32;
+            let n_energies = self.energies.view().nrows() as u32;
             let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
             cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
         }
@@ -657,24 +685,16 @@ impl DefendShader {
         });
     }
 
-    fn energies_equal(a: &[Energy], b: &[Energy]) -> bool {
-        if a.len() != b.len() {
-            return false;
-        }
-        let a_set: HashSet<Energy> = a.iter().copied().collect();
-        for e in b {
-            if !a_set.contains(e) {
-                return false;
-            }
-        }
-        true
-    }
-
     fn process_results(&mut self, atk_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+
         let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
-        let suprema: Vec<Energy> = bytemuck::cast_slice(&sup_data).to_vec();
+        let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
+        let energy_size = game.graph.get_conf().energy_size() as usize;
+        let n_sup = sup_vec.len() / energy_size;
+        let sup_array = Array2::from_shape_vec((n_sup, energy_size), sup_vec).expect("Suprema array has invalid shape");
+        let suprema = EnergyArray::from_array(sup_array, game.graph.get_conf());
 
         if log_enabled!(Trace) {
             let mut msg = "Defend Minima:   ".to_string();
@@ -685,24 +705,21 @@ impl DefendShader {
             trace!("Defend Suprema: {:?}", suprema);
         }
 
-        const MINIMA_SIZE: usize = 64;
+        const MINIMA_SIZE: usize = u64::BITS as usize;
 
         for node_window in self.node_offsets.windows(2) {
             let cur = node_window[0];
             let next_offset = node_window[1].sup_offset;
             let prev = &game.energies[cur.node as usize];
 
-            // Maybe it is faster to first compare the number of entries by counting 1's in minima
-            let new_energies: Vec<Energy> = suprema.iter()
-                .enumerate()
-                .take(next_offset as usize)
-                .skip(cur.sup_offset as usize)
-                // Read the corresponding minima flag
-                .filter(|(i, _)| minima[i / MINIMA_SIZE] & (1 << i % MINIMA_SIZE) != 0)
-                .map(|(_, e)| *e)
+            let indices: Vec<usize> = (cur.sup_offset as usize..next_offset as usize)
+                .filter(|i| minima[i / MINIMA_SIZE] & (1 << i % MINIMA_SIZE) != 0)
                 .collect();
 
-            if !Self::energies_equal(&new_energies, prev)  {
+            let new_array = suprema.view().select(Axis(0), indices.as_slice());
+            let new_energies = EnergyArray::from_array(new_array, game.graph.get_conf());
+
+            if &new_energies != prev {
                 // Write new, filtered energies
                 game.energies[cur.node as usize] = new_energies;
 
@@ -728,7 +745,7 @@ impl DefendShader {
 struct AttackShader {
     gpu: Rc<GPUCommon>,
     visit_list: HashSet<u32>,
-    energies: Vec<Energy>,
+    energies: EnergyArray,
     energies_buf: Buffer,
     energies_staging_buf: Buffer,
     node_offsets: Vec<NodeOffsetAtk>,
@@ -780,7 +797,7 @@ impl AttackShader {
         });
         let successor_offsets_buf = Self::get_successor_offsets_buf(&gpu.device, &successor_offsets);
         let (minima_buf, minima_staging_buf) = Self::get_minima_buf(&gpu.device,
-            Self::minima_size(energies.len()));
+            Self::minima_size(energies.n_energies()));
 
         let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Attack energy bind group layout"),
@@ -862,7 +879,7 @@ impl AttackShader {
         let queue = &self.gpu.queue;
         let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game)?;
 
-        if !buffer_fits(&energies, &self.energies_buf) {
+        if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
             self.energies_buf = Self::get_energies_buf(&device, &energies);
             self.energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Energies staging buffer", Self::name())),
@@ -871,7 +888,7 @@ impl AttackShader {
                 mapped_at_creation: false,
             });
         } else {
-            queue.write_buffer(&self.energies_buf, 0, bytemuck::cast_slice(&energies));
+            queue.write_buffer(&self.energies_buf, 0, energies.data());
         }
         self.energies = energies;
 
@@ -893,7 +910,7 @@ impl AttackShader {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
         }
 
-        let minima_capacity = Self::minima_size(self.energies.len());
+        let minima_capacity = Self::minima_size(self.energies.n_energies());
         if minima_capacity * std::mem::size_of::<u32>() > self.minima_buf.size() as usize {
             (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(&device, minima_capacity);
         }
@@ -926,8 +943,8 @@ impl AttackShader {
     fn collect_data(
         visit_list: &HashSet<u32>,
         game: &EnergyGame
-    ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, Vec<Energy>)> {
-        let mut energies = Vec::new();
+    ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray)> {
+        let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
         let mut successor_offsets_count = 0;
         let mut node_offsets = Vec::new();
@@ -940,16 +957,16 @@ impl AttackShader {
                 successor_offsets_idx: successor_offsets_count,
             });
             for &successor in &game.graph.adj[*node as usize] {
-                let successor_energies = &game.energies[successor as usize];
-                energies.extend(successor_energies);
+                let successor_energies = game.energies[successor as usize].view();
+                energies.append(Axis(0), successor_energies).unwrap();
                 successor_offsets.push(count);
                 count = count.checked_add(successor_energies.len() as u32)
                     .ok_or(Error::Overflow)?;
             }
             // Last "successor" is always the own node in the attack case
             successor_offsets.push(count);
-            let own_energies = &game.energies[*node as usize];
-            energies.extend(own_energies);
+            let own_energies = game.energies[*node as usize].view();
+            energies.append(Axis(0), own_energies).unwrap();
             // Add number of successors + 1 for own node
             successor_offsets_count = successor_offsets_count.checked_add(
                 game.graph.adj[*node as usize].len() as u32 + 1)
@@ -964,11 +981,12 @@ impl AttackShader {
             successor_offsets_idx: successor_offsets_count,
         });
         trace!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
-        Ok((node_offsets, successor_offsets, energies))
+        Ok((node_offsets, successor_offsets,
+            EnergyArray::from_array(energies, game.graph.get_conf())))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
-        let n_energies = self.energies.len() as u32;
+        let n_energies = self.energies.n_energies() as u32;
         let workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1006,8 +1024,14 @@ impl AttackShader {
     fn process_results(&mut self, def_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+
         let energies_data = self.energies_staging_buf.slice(..).get_mapped_range();
-        let energies: Vec<Energy> = bytemuck::cast_slice(&energies_data).to_vec();
+        let energies_vec: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
+        let energy_size = game.graph.conf.energy_size() as usize;
+        let n_energies = energies_vec.len() / energy_size;
+        let energies_array = Array2::from_shape_vec((n_energies, energy_size), energies_vec)
+            .expect("Energy array has invalid shape");
+        let energies = EnergyArray::from_array(energies_array, game.graph.get_conf());
 
         if log_enabled!(Trace) {
             let mut msg = "Attack Minima:    ".to_string();
@@ -1018,13 +1042,13 @@ impl AttackShader {
             trace!("Attack Energies: {:?}", energies);
         }
 
-        const MINIMA_SIZE: u32 = 64;
+        const MINIMA_SIZE: u32 = u64::BITS;
 
         for node_window in self.node_offsets.windows(2) {
             let cur = node_window[0];
             let next_offset = node_window[1].offset;
             let width = next_offset - cur.offset;
-            let n_prev = game.energies[cur.node as usize].len() as u32;
+            let n_prev = game.energies[cur.node as usize].n_energies() as u32;
             let n_new = width - n_prev;
             debug_assert!(n_prev <= width);
 
@@ -1064,15 +1088,13 @@ impl AttackShader {
             }
 
             if changed {
-                // Write new, filtered energies
-                game.energies[cur.node as usize] = energies.iter()
-                    .enumerate()
-                    .take(next_offset as usize)
-                    .skip(cur.offset as usize)
-                    // Read the corresponding minima flag
-                    .filter(|(i, _)| minima[i / MINIMA_SIZE as usize] & (1 << i % MINIMA_SIZE as usize) > 0)
-                    .map(|(_, e)| *e)
+                let indices: Vec<usize> = (cur.offset as usize..next_offset as usize)
+                    .filter(|i| minima[i / MINIMA_SIZE as usize] & (1 << i % MINIMA_SIZE as usize) != 0)
                     .collect();
+
+                // Write new, filtered energies
+                let new_array = energies.view().select(Axis(0), indices.as_slice());
+                game.energies[cur.node as usize] = EnergyArray::from_array(new_array, game.graph.get_conf());
 
                 // Winning budgets have improved, check predecessors in next iteration
                 for &pre in &game.graph.reverse()[cur.node as usize] {
