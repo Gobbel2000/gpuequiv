@@ -71,7 +71,7 @@ impl EnergyConf {
 }
 
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Energy {
     data: Vec<u32>,
     conf: EnergyConf,
@@ -145,13 +145,14 @@ impl From<&Energy> for Vec<u32> {
     }
 }
 
-impl fmt::Debug for Energy {
+impl fmt::Display for Energy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, " ")?;
         for val in self.to_vec() {
             if val == self.conf.max {
-                write!(f, "∞")?;
+                write!(f, "∞ ")?;
             } else {
-                write!(f, "{val}")?;
+                write!(f, "{val} ")?;
             };
         }
         Ok(())
@@ -218,6 +219,12 @@ impl EnergyArray {
         self.array.view()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item=Energy> + '_ {
+        self.array.rows().into_iter().map(|row|
+            Energy::from_raw_data(row.as_slice()
+            .expect("Array should be contiguous and in standard layout"), self.conf))
+    }
+
     /// Constructs an EnergyArray struct from array data.
     /// Care must be taken to only provide valid data. This function does not check whether the
     /// data in the array adheres to conf.max and whether all padding bits are zeroed.
@@ -248,6 +255,21 @@ impl PartialEq for EnergyArray {
             }
         }
         true
+    }
+}
+
+impl fmt::Display for EnergyArray {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = "[".to_string();
+        for energy in self.iter() {
+            out.push_str(&format!("{}\n ", energy));
+        }
+        if out.len() >= 2 {
+            out.replace_range(out.len() - 2.., "]");
+        } else {
+            out.push(']');
+        }
+        write!(f, "{}", out)
     }
 }
 

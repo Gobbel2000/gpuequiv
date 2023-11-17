@@ -4,15 +4,15 @@ use std::io;
 
 use gpuequiv::*;
 
-/*
 // Varied, multidimensional updates, leading to multidimensional energies
 fn _multidimensional() -> EnergyGame {
+    let conf = EnergyConf::STANDARD;
     let attacker_pos: Vec<bool> = (0..18)
         .map(|i| [0, 2, 4, 6, 9, 11, 12, 14, 17].contains(&i))
         .collect();
     let graph = GameGraph::new(
         18,
-        &[
+        vec![
             (0, 1, update![0, 0, -1]),
             (1, 2, update![0, -1, 0]),
             (2, 3, update![0, Upd::Min(1)]),
@@ -35,10 +35,10 @@ fn _multidimensional() -> EnergyGame {
             (16, 17, update![0, 0, -1]),
         ],
         &attacker_pos,
+        conf,
     );
     EnergyGame::standard_reach(graph)
 }
-*/
 
 fn combinations() -> EnergyGame {
     let conf = EnergyConf::STANDARD;
@@ -84,7 +84,9 @@ async fn example() {
     //let f = File::create("graph.json").unwrap();
     //serde_json::to_writer_pretty(f, &game.graph).unwrap();
     let energies = game.run().await.unwrap();
-    println!("{:#?}", energies);
+    for node in energies {
+        println!("{}", node);
+    }
 }
 
 /*
