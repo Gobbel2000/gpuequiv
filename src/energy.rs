@@ -275,6 +275,19 @@ impl fmt::Display for EnergyArray {
     }
 }
 
+impl From<EnergyArray> for Vec<Energy> {
+    fn from(array: EnergyArray) -> Vec<Energy> {
+        array.iter().collect()
+    }
+}
+
+impl From<&EnergyArray> for Vec<Vec<u32>> {
+    fn from(array: &EnergyArray) -> Vec<Vec<u32>> {
+        array.iter().map(|energy| (&energy).into())
+            .collect()
+    }
+}
+
 impl TryFrom<&[Energy]> for EnergyArray {
     type Error = &'static str;
     fn try_from(energies: &[Energy]) -> Result<Self, Self::Error> {
