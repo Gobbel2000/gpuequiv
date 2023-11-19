@@ -1,5 +1,8 @@
+alias Energy = array<u32, $ENERGY_SIZE>;
+alias Update = array<u32, $UPDATE_SIZE>;
+
 @group(0) @binding(0)
-var<storage, read_write> energies: array<u32>;
+var<storage, read_write> energies: array<Energy>;
 
 @group(0) @binding(1)
 var<storage> node_offsets: array<NodeOffset>;
@@ -18,7 +21,7 @@ var<storage> graph_column_indices: array<u32>;
 var<storage> graph_row_offsets: array<u32>;
 
 @group(1) @binding(2)
-var<storage> graph_weights: array<u32>;
+var<storage> graph_weights: array<Update>;
 
 struct NodeOffset {
     node: u32,
@@ -26,98 +29,37 @@ struct NodeOffset {
     offset: u32,
 }
 
+
 // Temporary buffer to hold the output flags as u32. This is later condensed
 // into bit-packed u32's in the minima storage buffer.
 var<workgroup> minima_buf: array<u32,64u>;
 var<workgroup> wg_node: u32;
 
-fn less_eq(a: u32, b: u32) -> bool {
-    return ((a & 0x3u) <= (b & 0x3u)
-        && (a & 0xcu) <= (b & 0xcu)
-        && (a & 0x30u) <= (b & 0x30u)
-        && (a & 0xc0u) <= (b & 0xc0u)
-        && (a & 0x300u) <= (b & 0x300u)
-        && (a & 0xc00u) <= (b & 0xc00u)
-        /* for 8-tuple energies
-        && (a & 0x3000u) <= (b & 0x3000u)
-        && (a & 0xc000u) <= (b & 0xc000u)
-        */
-    );
+fn less_eq(a: Energy, b: Energy) -> bool {
+    $IMPL_LESS_EQ;
+}
+
+fn energy_eq(a: Energy, b: Energy) -> bool {
+    $IMPL_EQ;
 }
 
 // Apply the update to e backwards
-fn inv_update(e: u32, upd: u32) -> u32 {
-    /*
-    if upd == 0u {
-        return e;
-    }
-    */
+fn inv_update(e: Energy, u: Update) -> Energy {
     // Expand bit fields into full u32's
-    var energy = array<vec4<u32>,2u>(
-        (vec4(e) >> vec4(0u, 2u, 4u, 6u)) & vec4(0x3u),
-        (vec4(e) >> vec4(8u, 10u, 12u, 14u)) & vec4(0x3u),
-    );
+    var energy = $UNPACK_ENERGY;
+    let updates = $UNPACK_UPDATE;
 
-    let updates = array<vec4<u32>,2u>(
-        (vec4(upd) >> vec4(0u, 4u, 8u, 12u)) & vec4(0xfu),
-        (vec4(upd) >> vec4(16u, 20u, 24u, 28u)) & vec4(0xfu),
-    );
-
-    // Apply 1u-updates first
-    energy[0u] += vec4<u32>(updates[0u] == vec4<u32>(1u)); // 1 encodes 1-update
-    energy[1u] += vec4<u32>(updates[1u] == vec4<u32>(1u));
+    // Apply 1-updates first
+$UPDATE1
 
     // Look for min-updates
     // 0u means no update, 1 means 1-update, everything else represents
     // the second component in the min-operation, the first being the
     // current position i. To make place for the 2 special values, 2
     // must be subtracted here.
-    /*
-    for (var i: u32 = 0u; i < 6u; i++) {
-        var u = updates[i >> 2u][i & 0x3u];
-        if u > 1u {
-            u -= 2u;
-            energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u],
-                                            energy[i >> 2u][i & 0x3u]);
-        }
-    }
-    */
+    $UPDATE_MIN
 
-    // Unrolled loop
-    var u = updates[0][0];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][0]);
-    }
-    u = updates[0][1];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][1]);
-    }
-    u = updates[0][2];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][2]);
-    }
-    u = updates[0][3];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[0][3]);
-    }
-    u = updates[1][0];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[1][0]);
-    }
-    u = updates[1][1];
-    if u > 1u {
-        u -= 2u;
-        energy[u >> 2u][u & 0x3u] = max(energy[u >> 2u][u & 0x3u], energy[1][1]);
-    }
-
-    energy[0u] = min(energy[0u], vec4(3u)) << vec4(0u, 2u, 4u, 6u) |
-                 min(energy[1u], vec4(3u)) << vec4(8u, 10u, 12u, 16u);
-    return energy[0u].x | energy[0u].y | energy[0u].z | energy[0u].w;
+    return $PACK_ENERGY;
 }
 
 fn find_start_node_idx(i: u32, l_idx: u32) -> u32 {
@@ -165,7 +107,7 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
     let start_node = node.node;
 
     // Update energies
-    var update = 0u;
+    var update = array<u32, $UPDATE_SIZE>();
     // Search for successor to use
     for (var suc = node.successor_offsets_idx;
          // Stop before last entry, which correspond to the node's own energies.
@@ -181,8 +123,7 @@ fn main(@builtin(global_invocation_id) g_id: vec3<u32>,
         }
     }
 
-    let updated = inv_update(energies[i], update);
-    energies[i] = updated;
+    energies[i] = inv_update(energies[i], update);
 }
 
 @compute
@@ -209,8 +150,9 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
         let e2 = energies[j];
         // Skip reflexive comparisons,
         // When energies are equal, keep only those with higher index
-        if j != i && ((e2 == energy && i < j) ||
-                      (e2 != energy && less_eq(e2, energy))) {
+        let eq = energy_eq(e2, energy);
+        if j != i && ((eq && i < j) ||
+                      (!eq && less_eq(e2, energy))) {
             // Mark to be filtered out
             is_minimal = 0u;
             break;

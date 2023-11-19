@@ -672,6 +672,7 @@ dependencies = [
  "log",
  "ndarray",
  "pollster",
+ "regex",
  "serde",
  "serde_json",
  "wasm-bindgen-futures",

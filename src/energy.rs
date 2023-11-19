@@ -34,8 +34,8 @@ where
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EnergyConf {
-    elements: u32,
-    max: u32,
+    pub elements: u32,
+    pub max: u32,
 }
 
 impl EnergyConf {
@@ -138,7 +138,7 @@ impl From<&Energy> for Vec<u32> {
         for _ in 0..energy.conf.elements as usize {
             vec.push((energy.data[word] >> shift) & energy.conf.energy_mask());
             shift += energy.conf.energy_bits();
-            if shift > u32::BITS {
+            if shift >= u32::BITS {
                 shift = 0;
                 word += 1;
             }
@@ -407,7 +407,7 @@ impl Update {
     }
 
     pub fn from_raw_data(data: &[u32], conf: EnergyConf) -> Self {
-        assert_eq!(data.len(), conf.energy_size() as usize);
+        assert_eq!(data.len(), conf.update_size() as usize);
         Self {
             data: data.to_vec(),
             conf,

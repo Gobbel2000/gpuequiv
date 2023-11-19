@@ -1,6 +1,6 @@
 pub mod energy;
+pub mod shaderutils;
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::{fmt, error, result};
 use std::iter;
@@ -18,6 +18,8 @@ pub use crate::energy::{
     EnergyConf, EnergyArray, Energy, UpdateArray, Update, Upd,
     IntoEnergyConf, FromEnergyConf,
 };
+use crate::shaderutils::{ShaderPreproc, make_replacements,
+    build_attack, build_defend_update, build_defend_combine};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
@@ -341,6 +343,7 @@ impl DefendShader {
         gpu: Rc<GPUCommon>,
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
+        preprocessor: &ShaderPreproc,
     ) -> Result<DefendShader> {
         let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
@@ -367,7 +370,7 @@ impl DefendShader {
             .max(INITIAL_CAPACITY);
         let sup_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Defend suprema of combinations storage buffer"),
-            size: (sup_size * std::mem::size_of::<u32>()) as u64,
+            size: (sup_size * game.graph.get_conf().energy_size() as usize * std::mem::size_of::<u32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -468,7 +471,7 @@ impl DefendShader {
         });
         let update_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Defend energy update shader module"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("defend_update.wgsl"))),
+            source: build_defend_update(preprocessor),
         });
         let update_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Defend energy update pipeline"),
@@ -484,7 +487,7 @@ impl DefendShader {
         });
         let combine_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Defend suprema of combinations shader module"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("defend_combine.wgsl"))),
+            source: build_defend_combine(preprocessor),
         });
         let combine_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Defend suprema of combinations pipeline"),
@@ -560,10 +563,11 @@ impl DefendShader {
 
         let sup_size = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
             .sup_offset as usize;
-        if sup_size * std::mem::size_of::<u32>() > self.sup_buf.size() as usize {
+        let sup_bytes = (sup_size * game.graph.get_conf().energy_size() as usize * std::mem::size_of::<u32>()) as u64;
+        if sup_bytes > self.sup_buf.size() {
             self.sup_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Defend suprema of combinations storage buffer"),
-                size: (sup_size * std::mem::size_of::<u32>()) as u64,
+                size: sup_bytes,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
@@ -663,12 +667,12 @@ impl DefendShader {
             });
             let mut cur_sup_count: u32 = 1;
             for &successor in &game.graph.adj[snode] {
-                let successor_energies = game.energies[successor as usize].view();
-                energies.append(Axis(0), successor_energies).unwrap();
+                let successor_energies = &game.energies[successor as usize];
+                energies.append(Axis(0), successor_energies.view()).unwrap();
                 successor_offsets.push(energies_count);
-                energies_count = energies_count.checked_add(successor_energies.len() as u32)
+                energies_count = energies_count.checked_add(successor_energies.n_energies() as u32)
                     .ok_or(Error::Overflow)?;
-                cur_sup_count = cur_sup_count.checked_mul(successor_energies.len() as u32)
+                cur_sup_count = cur_sup_count.checked_mul(successor_energies.n_energies() as u32)
                     .ok_or(Error::Overflow)?;
             }
             successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32)
@@ -683,10 +687,10 @@ impl DefendShader {
             energy_offset: energies_count,
             sup_offset: sup_count,
         });
-        trace!("Defend data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
+        let earray = EnergyArray::from_array(energies, game.graph.get_conf());
+        trace!("Defend data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
 
-        Ok((node_offsets, successor_offsets,
-            EnergyArray::from_array(energies, game.graph.get_conf())))
+        Ok((node_offsets, successor_offsets, earray))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -756,7 +760,7 @@ impl DefendShader {
                 msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
             }
             trace!("{}", msg);
-            trace!("Defend Suprema: {:?}", suprema);
+            trace!("Defend Suprema:\n{}", suprema);
         }
 
         const MINIMA_SIZE: usize = u64::BITS as usize;
@@ -823,6 +827,7 @@ impl AttackShader {
         gpu: Rc<GPUCommon>,
         game: &EnergyGame,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
+        preprocessor: &ShaderPreproc,
     ) -> Result<AttackShader> {
         let mut visit_list: HashSet<u32> = HashSet::new();
         for &v in &game.to_reach {
@@ -887,7 +892,7 @@ impl AttackShader {
 
         let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Attack shader module"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("attack.wgsl"))),
+            source: build_attack(preprocessor),
         });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Attack pipeline layout"),
@@ -1011,21 +1016,21 @@ impl AttackShader {
                 successor_offsets_idx: successor_offsets_count,
             });
             for &successor in &game.graph.adj[*node as usize] {
-                let successor_energies = game.energies[successor as usize].view();
-                energies.append(Axis(0), successor_energies).unwrap();
+                let successor_energies = &game.energies[successor as usize];
+                energies.append(Axis(0), successor_energies.view()).unwrap();
                 successor_offsets.push(count);
-                count = count.checked_add(successor_energies.len() as u32)
+                count = count.checked_add(successor_energies.n_energies() as u32)
                     .ok_or(Error::Overflow)?;
             }
             // Last "successor" is always the own node in the attack case
             successor_offsets.push(count);
-            let own_energies = game.energies[*node as usize].view();
-            energies.append(Axis(0), own_energies).unwrap();
+            let own_energies = &game.energies[*node as usize];
+            energies.append(Axis(0), own_energies.view()).unwrap();
             // Add number of successors + 1 for own node
             successor_offsets_count = successor_offsets_count.checked_add(
                 game.graph.adj[*node as usize].len() as u32 + 1)
                 .ok_or(Error::Overflow)?;
-            count = count.checked_add(own_energies.len() as u32).ok_or(Error::Overflow)?;
+            count = count.checked_add(own_energies.n_energies() as u32).ok_or(Error::Overflow)?;
         }
         successor_offsets.push(count);
         // Last offset does not correspond to another starting node, mark with u32::MAX
@@ -1034,9 +1039,9 @@ impl AttackShader {
             offset: count,
             successor_offsets_idx: successor_offsets_count,
         });
-        trace!("Attack data: {:?}\n{:?}\n{:?}", node_offsets, successor_offsets, energies);
-        Ok((node_offsets, successor_offsets,
-            EnergyArray::from_array(energies, game.graph.get_conf())))
+        let earray = EnergyArray::from_array(energies, game.graph.get_conf());
+        trace!("Attack data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
+        Ok((node_offsets, successor_offsets, earray))
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -1093,7 +1098,7 @@ impl AttackShader {
                 msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
             }
             trace!("{}", msg);
-            trace!("Attack Energies: {:?}", energies);
+            trace!("Attack Energies:\n{}", energies);
         }
 
         const MINIMA_SIZE: u32 = u64::BITS;
@@ -1229,9 +1234,10 @@ impl<'a> GPURunner<'a> {
         let graph_bind_group_layout = Self::graph_bind_group_layout(&gpu_common.device);
         let graph_bind_group = Self::graph_bind_group(
             &graph_bind_group_layout, &gpu_common.device, &graph_buffers);
+        let preprocessor = make_replacements(game.graph.get_conf());
 
-        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout)?;
-        let def_shader = DefendShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout)?;
+        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout, &preprocessor)?;
+        let def_shader = DefendShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout, &preprocessor)?;
 
         Ok(GPURunner {
             game,

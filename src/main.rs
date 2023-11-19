@@ -81,8 +81,8 @@ fn combinations() -> EnergyGame {
 
 async fn example() {
     let mut game = combinations();
-    let f = File::create("graph.json").unwrap();
-    serde_json::to_writer_pretty(f, &game.graph).unwrap();
+    //let f = File::create("graph.json").unwrap();
+    //serde_json::to_writer_pretty(f, &game.graph).unwrap();
     let energies = game.run().await.unwrap();
     for node in energies {
         println!("{}", node);
