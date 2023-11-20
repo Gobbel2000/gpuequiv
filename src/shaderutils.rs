@@ -112,7 +112,7 @@ fn update1(conf: EnergyConf) -> String {
 
 fn update_min(conf: EnergyConf) -> String {
     // Look for min-updates
-    // 0u means no update, 1 means 1-update, everything else represents
+    // 0 means no update, 1 means 1-update, everything else represents
     // the second component in the min-operation, the first being the
     // current position i. To make place for the 2 special values, 2
     // must be subtracted here.

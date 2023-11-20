@@ -39,7 +39,10 @@ pub struct EnergyConf {
 }
 
 impl EnergyConf {
-    pub const STANDARD: Self = EnergyConf{ elements: 6, max: 3 };
+    pub const STANDARD: Self = EnergyConf { elements: 6, max: 3 };
+    pub const SILENT_STEP: Self = EnergyConf { elements: 8, max: 2 };
+    pub const ONE_DIMENSION: Self = EnergyConf { elements: 1, max: u32::MAX };
+
     // Number of u32's required to store all elements
     pub fn energy_size(&self) -> u32 {
         //sizes or add padding at the end of each word.
@@ -466,7 +469,7 @@ impl From<&Update> for Vec<Upd> {
             });
 
             shift += update.conf.update_bits();
-            if shift > u32::BITS {
+            if shift >= u32::BITS {
                 shift = 0;
                 word += 1;
             }
@@ -674,7 +677,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_energy_conf() {
+        let c = EnergyConf { elements: 4, max: 3 };
+        assert_eq!(c.energy_size(), 1);
+        assert_eq!(c.energy_bits(), 2);
+        assert_eq!(c.energy_mask(), 0x3);
+        assert_eq!(c.update_size(), 1);
+        assert_eq!(c.update_bits(), 4);
+        assert_eq!(c.update_mask(), 0xf);
+
+        let c = EnergyConf { elements: 6, max: 100 };
+        assert_eq!(c.energy_size(), 2);
+        assert_eq!(c.energy_bits(), 8);
+        assert_eq!(c.energy_mask(), 0xff);
+        assert_eq!(c.update_size(), 1);
+        assert_eq!(c.update_bits(), 4);
+        assert_eq!(c.update_mask(), 0xf);
+
+        let c = EnergyConf { elements: 30, max: 3 };
+        assert_eq!(c.energy_size(), 2);
+        assert_eq!(c.energy_bits(), 2);
+        assert_eq!(c.energy_mask(), 0x3);
+        assert_eq!(c.update_size(), 8);
+        assert_eq!(c.update_bits(), 8);
+        assert_eq!(c.update_mask(), 0xff);
+
+        let c = EnergyConf { elements: 4, max: u32::MAX };
+        assert_eq!(c.energy_size(), 4);
+        assert_eq!(c.energy_bits(), 32);
+        assert_eq!(c.energy_mask(), u32::MAX);
+        assert_eq!(c.update_size(), 1);
+        assert_eq!(c.update_bits(), 4);
+        assert_eq!(c.update_mask(), 0xf);
+    }
+
+    #[test]
     fn test_energy() {
+        let conf = EnergyConf { elements: 12, max: 15 };
+        let values = vec![0, 1, 2, 3, 4, 5, 6, 7,
+                          8, 13, 14, 15];
+        let energy = Energy::new(values.as_slice(), conf).unwrap();
+        assert_eq!(energy.data, vec![0x76543210, 0xfed8]);
+        assert_eq!(energy.to_vec(), values);
+
+        let zero = Energy::zero(conf);
+        assert_eq!(zero.data, vec![0, 0]);
+        assert_eq!(zero.to_vec(), vec![0; 12]);
+    }
+
+    #[test]
+    fn test_energy_array() {
         let conf = EnergyConf { elements: 6, max: 3 };
         let mut array = EnergyArray::zero(4, conf);
         let row = array.get(2).unwrap();
@@ -704,8 +756,22 @@ mod tests {
 
     #[test]
     fn test_update() {
-        let conf = EnergyConf { elements: 6, max: 3 };
-        assert_eq!(Update::zero(conf).data, vec![0]);
+        let conf = EnergyConf { elements: 12, max: 3 };
+        let values = vec![Upd::Zero, Upd::Decrement, Upd::Min(1), Upd::Min(2),
+                          Upd::Min(3), Upd::Min(4), Upd::Min(5), Upd::Min(6),
+                          Upd::Min(9), Upd::Min(10), Upd::Min(11), Upd::Min(12)];
+        let update = Update::new(values.as_slice(), conf).unwrap();
+        assert_eq!(update.data, vec![0x76543210, 0xdcba]);
+        assert_eq!(update.to_vec(), values);
+        let nums: Vec<i32> = (&update).into();
+        assert_eq!(nums, vec![0, -1, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12]);
+        assert_eq!(update.to_vec(), update![Upd::Zero, -1, 1, 2,
+                                            Upd::Min(3), Upd::Min(4), Upd::Min(5), Upd::Min(6),
+                                            9, 10, 11, Upd::Min(12)]);
+
+        let zero = Update::zero(conf);
+        assert_eq!(zero.data, vec![0, 0]);
+        assert_eq!(zero.to_vec(), vec![Upd::Zero; 12]);
     }
 
     #[test]
