@@ -1,8 +1,11 @@
 pub mod energy;
 pub mod shaderutils;
 
+mod utils;
+pub mod error;
+
 use std::collections::HashSet;
-use std::{fmt, error, result};
+use std::result;
 use std::iter;
 use std::rc::Rc;
 
@@ -11,13 +14,16 @@ use log::Level::Trace;
 use log::{trace, log_enabled};
 use ndarray::{Array2, Axis};
 use serde::{Serialize, Deserialize};
-use wgpu::{Buffer, Device, Queue};
+use wgpu::{Buffer, Device};
 use wgpu::util::DeviceExt;
 
+
+pub use error::*;
 pub use crate::energy::{
     EnergyConf, EnergyArray, Energy, UpdateArray, Update, Upd,
     IntoEnergyConf, FromEnergyConf,
 };
+use utils::{GPUCommon, bgl_entry, buffer_fits, GPUGraph};
 use crate::shaderutils::{ShaderPreproc, make_replacements,
     build_attack, build_defend_update, build_defend_combine};
 
@@ -141,7 +147,15 @@ impl GameGraph {
         self.adj.len() as u32
     }
 
-    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<u8>) {
+    pub fn get_conf(&self) -> EnergyConf {
+        self.conf
+    }
+}
+
+impl GPUGraph for GameGraph {
+    type Weight = u8;
+
+    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<Self::Weight>) {
         let column_indices = self.adj.iter()
             .flatten()
             .copied()
@@ -160,10 +174,6 @@ impl GameGraph {
             }))
             .collect();
         (column_indices, row_offsets, weights)
-    }
-
-    pub fn get_conf(&self) -> EnergyConf {
-        self.conf
     }
 }
 
@@ -1175,51 +1185,10 @@ impl AttackShader {
 }
 
 
-// Common handles and data for managing the GPU device
-#[derive(Debug)]
-struct GPUCommon {
-    device: Device,
-    queue: Queue,
-}
-
-impl GPUCommon {
-    async fn new() -> Result<GPUCommon> {
-        let (device, queue) = Self::get_device().await?;
-
-        Ok(GPUCommon {
-            device,
-            queue,
-        })
-    }
-
-    async fn get_device() -> Result<(Device, Queue)> {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .ok_or(Error::NoAdapter)?;
-
-        Ok(adapter.request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::downlevel_defaults(),
-                },
-                None,
-            )
-            .await?)
-    }
-}
-
-
 pub struct GPURunner<'a> {
     game: &'a mut EnergyGame,
 
     gpu: Rc<GPUCommon>,
-    _graph_bufs: (Buffer, Buffer, Buffer),
     graph_bind_group: wgpu::BindGroup,
 
     atk_shader: AttackShader,
@@ -1230,10 +1199,7 @@ impl<'a> GPURunner<'a> {
 
     pub async fn with_game(game: &'a mut EnergyGame) -> Result<GPURunner<'a>> {
         let gpu_common = Rc::new(GPUCommon::new().await?);
-        let graph_buffers = Self::graph_buffers(&game.graph, &gpu_common.device);
-        let graph_bind_group_layout = Self::graph_bind_group_layout(&gpu_common.device);
-        let graph_bind_group = Self::graph_bind_group(
-            &graph_bind_group_layout, &gpu_common.device, &graph_buffers);
+        let (graph_bind_group_layout, graph_bind_group) = game.graph.bind_group(&gpu_common.device);
         let preprocessor = make_replacements(game.graph.get_conf());
 
         let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout, &preprocessor)?;
@@ -1242,67 +1208,10 @@ impl<'a> GPURunner<'a> {
         Ok(GPURunner {
             game,
             gpu: gpu_common,
-            _graph_bufs: graph_buffers,
             graph_bind_group,
 
             atk_shader,
             def_shader,
-        })
-    }
-
-    fn graph_buffers(graph: &GameGraph, device: &Device) -> (Buffer, Buffer, Buffer) {
-        let (c, r, w) = graph.csr();
-        let column_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph column indices storage bufer"),
-            contents: bytemuck::cast_slice(&c),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let row_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph row offsets storage buffer"),
-            contents: bytemuck::cast_slice(&r),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph edge weights storage buffer"),
-            contents: bytemuck::cast_slice(&w),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        (column_indices_buffer, row_offsets_buffer, weights_buffer)
-    }
-
-    fn graph_bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Input graph bind group layout"),
-            entries: &[
-                bgl_entry(0, true), // graph column indices
-                bgl_entry(1, true), // graph row offsets
-                bgl_entry(2, true), // graph edge weights
-            ],
-        })
-    }
-
-    fn graph_bind_group(layout: &wgpu::BindGroupLayout, device: &Device, buffers: &(Buffer, Buffer, Buffer))
-    -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Input graph bind group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry { // graph column indices
-                    binding: 0,
-                    resource: buffers.0.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry { // graph row offsets
-                    binding: 1,
-                    resource: buffers.1.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry { // graph edge weights
-                    binding: 2,
-                    resource: buffers.2.as_entire_binding(),
-                },
-            ],
         })
     }
 
@@ -1349,70 +1258,6 @@ impl<'a> GPURunner<'a> {
         }
     }
 }
-
-
-// Convenience function for creating bind group layout entries
-#[inline]
-fn bgl_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-// Return true if buf is large enough to contain vec
-fn buffer_fits<T>(vec: &Vec<T>, buf: &Buffer) -> bool {
-    vec.len() * std::mem::size_of::<T>() <= buf.size() as usize
-}
-
-#[derive(Debug)]
-pub enum Error {
-    NoAdapter,
-    NoDevice(wgpu::RequestDeviceError),
-    Overflow,
-    BufferMap(wgpu::BufferAsyncError),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::NoAdapter => write!(f, "could not get GPU adapter"),
-            Error::NoDevice(source) => write!(f, "could not get GPU device: {}", source),
-            Error::Overflow => write!(f, "overflow occured during calculation, input size too large"),
-            Error::BufferMap(source) => source.fmt(f),
-        }
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Error::NoDevice(source) => Some(source),
-            Error::BufferMap(source) => Some(source),
-            _ => None,
-        }
-    }
-}
-
-impl From<wgpu::RequestDeviceError> for Error {
-    fn from(err: wgpu::RequestDeviceError) -> Error {
-        Error::NoDevice(err)
-    }
-}
-
-impl From<wgpu::BufferAsyncError> for Error {
-    fn from(err: wgpu::BufferAsyncError) -> Error {
-        Error::BufferMap(err)
-    }
-}
-
-pub type Result<T> = result::Result<T, Error>;
 
 
 #[cfg(test)]
