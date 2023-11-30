@@ -1,5 +1,6 @@
 pub mod energy;
 pub mod shaderutils;
+pub mod gamebuild;
 
 mod utils;
 pub mod error;

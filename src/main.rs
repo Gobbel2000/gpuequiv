@@ -79,7 +79,7 @@ fn combinations() -> EnergyGame {
     EnergyGame::standard_reach(graph)
 }
 
-async fn example() {
+async fn energy_game() {
     let mut game = combinations();
     //let f = File::create("graph.json").unwrap();
     //serde_json::to_writer_pretty(f, &game.graph).unwrap();
@@ -87,6 +87,13 @@ async fn example() {
     for node in energies {
         println!("{}", node);
     }
+}
+
+async fn build_game() -> io::Result<()> {
+    let lts = gamebuild::TransitionSystem::new(2, vec![(0, 1, 1)]);
+    let runner = gamebuild::GPURunner::with_lts(lts).await.unwrap();
+    runner.execute_gpu().await.unwrap();
+    Ok(())
 }
 
 async fn run_json_graph() -> io::Result<()> {
@@ -107,8 +114,11 @@ fn main() -> io::Result<()> {
     env_logger::init();
     let mut args = env::args_os();
     match args.len() {
-        1 => Ok(pollster::block_on(example())),
-        2 => pollster::block_on(run_json_graph()),
+        1 => Ok(pollster::block_on(energy_game())),
+        2 => match args.nth(1).unwrap().to_str() {
+            Some("build") => pollster::block_on(build_game()),
+            _ => pollster::block_on(run_json_graph()),
+        },
         _ => {
             eprintln!("Invalid arguments. Usage: {:?} [file]", args.next().unwrap_or_default());
             std::process::exit(2);
