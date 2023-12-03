@@ -90,7 +90,17 @@ async fn energy_game() {
 }
 
 async fn build_game() -> io::Result<()> {
-    let lts = gamebuild::TransitionSystem::new(2, vec![(0, 1, 1)]);
+    let lts = gamebuild::TransitionSystem::new(
+        5,
+        vec![
+            (0, 0, 0),
+            (0, 2, 0),
+            (0, 2, 1),
+            (1, 1, 0),
+            (1, 2, 1),
+            (2, 2, 0),
+        ],
+    );
     let runner = gamebuild::GPURunner::with_lts(lts).await.unwrap();
     runner.execute_gpu().await.unwrap();
     Ok(())
