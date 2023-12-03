@@ -1,4 +1,4 @@
-use std::{mem, iter};
+use std::{mem, iter, fmt};
 use std::borrow::Cow;
 use std::rc::Rc;
 
@@ -69,6 +69,24 @@ struct LinkedList {
     next: u32,
 }
 
+impl fmt::Display for LinkedList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for i in 0..self.len.min(4) {
+            if i == 0 {
+                write!(f, "{}", self.data[i as usize])?;
+            } else {
+                write!(f, ", {}", self.data[i as usize])?;
+            }
+        }
+        write!(f, "]")?;
+        if self.len > 4 {
+            write!(f, "->{}", self.next)?;
+        }
+        Ok(())
+    }
+}
+
 // Enable bytemucking for filling buffers
 unsafe impl bytemuck::Zeroable for LinkedList {}
 unsafe impl bytemuck::Pod for LinkedList {}
@@ -81,6 +99,14 @@ struct Position {
     Q: LinkedList,
 }
 
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Attacker Position: p = {},\t Q = {}",
+               self.p, self.Q,
+        )
+    }
+}
+
 unsafe impl bytemuck::Zeroable for Position {}
 unsafe impl bytemuck::Pod for Position {}
 
@@ -91,6 +117,14 @@ struct ConjunctionPosition {
     p: u32,
     Q: LinkedList,
     Qx: LinkedList,
+}
+
+impl fmt::Display for ConjunctionPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Defender Conjunction Position: p = {},\t Q = {},\t Q* = {}",
+               self.p, self.Q, self.Qx,
+        )
+    }
 }
 
 unsafe impl bytemuck::Zeroable for ConjunctionPosition {}
@@ -576,8 +610,13 @@ impl GPURunner {
         let metadata: &Metadata = bytemuck::from_bytes(
             &raw_data[(self.challenge_shader.out_buf.size() + self.challenge_shader.heap_buf.size()) as usize ..]);
 
-        println!("Positions: {:?}", pos_out);
-        println!("Heap: {:?}", heap);
+        for p in pos_out {
+            println!("{p}");
+        }
+        println!("Heap:");
+        for (i, h) in heap.iter().enumerate() {
+            println!("{i}:\t {h}");
+        }
         println!("Metadata: {:?}", metadata);
 
         drop(raw_data);
