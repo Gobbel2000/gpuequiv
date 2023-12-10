@@ -672,6 +672,7 @@ dependencies = [
  "log",
  "ndarray",
  "pollster",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::collections::HashSet;
 
-use ndarray::{Array2, ArrayView2, ArrayView1, aview1};
+use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1};
 use serde::{Serialize, Deserialize};
 
 macro_rules! fn_get_conf {
@@ -524,6 +524,24 @@ impl UpdateArray {
             array,
             conf,
         }
+    }
+
+    pub fn repeat(update: Update, n: usize) -> Self {
+        let row = aview1(&update.data);
+        let view = row.broadcast((n, update.data.len())).unwrap();
+        Self {
+            array: view.to_owned(),
+            conf: update.conf,
+        }
+    }
+
+    pub fn push_n(&mut self, update: Update, n: usize) {
+        if update.conf != self.conf {
+            panic!("Incompatible configurations");
+        }
+        let row = aview1(&update.data);
+        let view = row.broadcast((n, update.data.len())).unwrap();
+        self.array.append(Axis(0), view).unwrap();
     }
 
     pub fn get(&self, idx: usize) -> Option<Update> {

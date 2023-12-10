@@ -65,11 +65,10 @@ fn new_list() -> LinkedList {
 }
 
 fn list_append(l: ptr<private,MutList>, element: u32) {
-    var last = (*l).last;
+    let last = (*l).last;
     if (*l).list.len < 4u {
         // Fits in first part
         (*l).list.data[(*l).list.len] = element;
-        (*l).list.len += 1u;
     } else if (*l).list.len > 4u && heap[last].len < 4u {
         // Fits in last allocated part
         heap[last].data[heap[last].len] = element;
@@ -95,9 +94,9 @@ fn list_append(l: ptr<private,MutList>, element: u32) {
             heap[last].next = pointer;
             heap[last].len += 1u;
         }
-        last = pointer;
+        (*l).last = pointer;
     }
-    (*l).last = last;
+    (*l).list.len += 1u;
 }
 
 // This functions requires all adjacency lists to be sorted by their label in

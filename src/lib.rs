@@ -5,6 +5,8 @@ pub mod gamebuild;
 mod utils;
 pub mod error;
 
+pub mod challenge_wgpu;
+
 use std::collections::HashSet;
 use std::result;
 use std::iter;
@@ -114,7 +116,7 @@ impl GameGraph {
     pub fn new<T>(
         n_vertices: u32,
         edges: Vec<(u32, u32, T)>,
-        attacker_pos: &[bool],
+        attacker_pos: Vec<bool>,
         conf: EnergyConf,
     ) -> Self 
     where
@@ -139,7 +141,17 @@ impl GameGraph {
             adj,
             reverse: reverse.into(),
             weights,
-            attacker_pos: attacker_pos.to_vec(),
+            attacker_pos,
+            conf,
+        }
+    }
+
+    pub fn empty(conf: EnergyConf) -> Self {
+        Self {
+            adj: Vec::new(),
+            reverse: Vec::new(),
+            weights: Vec::new(),
+            attacker_pos: Vec::new(),
             conf,
         }
     }

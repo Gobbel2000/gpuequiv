@@ -1,5 +1,3 @@
-pub mod gamepos;
-
 use std::{mem, iter};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -13,7 +11,7 @@ use crate::error::Result;
 use crate::energy::EnergyConf;
 use crate::GameGraph;
 
-use gamepos::*;
+use crate::gamebuild::gamepos::*;
 
 
 pub struct TransitionSystem {
@@ -70,219 +68,6 @@ impl GPUGraph for TransitionSystem {
 }
 
 
-struct ClauseShader {
-    gpu: Rc<GPUCommon>,
-    positions: Vec<SingletonPosition>,
-    in_buf: Buffer,
-    out_buf: Buffer,
-    staging_buf: Buffer,
-
-    bind_group: wgpu::BindGroup,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
-}
-
-impl ClauseShader {
-    fn new(gpu: Rc<GPUCommon>) -> Self {
-        let pos = vec![
-            SingletonPosition { p: 4, q: 3 },
-            SingletonPosition { p: 7, q: 9 },
-        ];
-
-        let in_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Clause buffer A"),
-            contents: bytemuck::cast_slice(&pos),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
-
-        let out_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Clause buffer B"),
-            size: in_buf.size() * 2,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Clause staging buffer"),
-            size: 280,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Clause bind group layout"),
-            entries: &[
-                bgl_entry(0, true), // Input, readonly
-                bgl_entry(1, false), // Output, writable
-            ],
-        });
-
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Clause bind group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: in_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Clause pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Clause shader module"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("clause.wgsl"))),
-        });
-
-        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Clause compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "process_clauses",
-        });
-
-        ClauseShader {
-            gpu,
-            positions: pos,
-            in_buf,
-            out_buf,
-            staging_buf,
-            bind_group,
-            bind_group_layout,
-            pipeline,
-        }
-    }
-
-    /*
-    fn process_results(&mut self, map: &HashMap<Position, u32>) -> Vec<AttackPosition> {
-        let data = self.out_buf.slice(..).get_mapped_range();
-        let pos_out: &[SingletonPosition] = bytemuck::cast_slice(&data);
-        for (start, out) in self.positions.iter().zip(pos_out.windows(2)) {
-            
-        }
-    }
-    */
-}
-
-struct ConjunctionShader {
-    gpu: Rc<GPUCommon>,
-    positions: Vec<DefendPosition>,
-    conjunction_buf: Buffer,
-    out_buf: Buffer,
-    staging_buf: Buffer,
-    bind_group: wgpu::BindGroup,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
-}
-
-impl ConjunctionShader {
-    fn new(gpu: Rc<GPUCommon>) -> Self {
-        let positions = Vec::new();
-
-        let conjunction_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Conjunction input storage buffer"),
-            contents: bytemuck::cast_slice(&positions),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        });
-
-        let out_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Conjunction output storage buffer"),
-            size: 1024, //TODO
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Conjunction output read staging buffer"),
-            size: out_buf.size(),
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        let heap_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Conjunction output linked list heap storage buffer"),
-            size: (1024 * mem::size_of::<LinkedList>()) as u64,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let heap_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Conjunction output linked list heap storage buffer"),
-            size: (1024 * mem::size_of::<LinkedList>()) as u64,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let metadata_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Conjunction metadata storage buffer"),
-            contents: bytemuck::bytes_of(&Metadata::default()),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
-
-        let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Conjunction bind group layout"),
-            entries: &[
-                bgl_entry(0, true), // Input, read only
-                bgl_entry(1, false), // Ouput, writable
-            ],
-        });
-
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Conjunction bind group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: conjunction_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: out_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Conjunction shader module"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("clause.wgsl"))),
-        });
-
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Conjunction pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Conjunction compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "process_conjunctions",
-        });
-
-        ConjunctionShader {
-            gpu,
-            positions,
-            conjunction_buf,
-            out_buf,
-            staging_buf,
-            bind_group,
-            bind_group_layout,
-            pipeline,
-        }
-    }
-}
-
-
 struct ChallengeShader {
     gpu: Rc<GPUCommon>,
     positions: Vec<AttackPosition>,
@@ -298,11 +83,37 @@ struct ChallengeShader {
 
 impl ChallengeShader {
     fn new(gpu: Rc<GPUCommon>, graph_layout: &wgpu::BindGroupLayout) -> Self {
-        let positions = vec![
+        let mut positions = vec![
+            AttackPosition {
+                p: 2,
+                q: LinkedList { data: [10, 3, 0, 0], len: 2, next: 0 },
+            },
             AttackPosition {
                 p: 1,
-                q: LinkedList { data: [0, 2, 0, 0], len: 2, next: 0 },
+                q: LinkedList { data: [0, 1, 2, 3], len: 11, next: 0 },
             },
+            AttackPosition {
+                p: 0,
+                q: LinkedList { data: [0, 4, 5, 6], len: 7, next: 2 },
+            },
+            AttackPosition {
+                p: 3,
+                q: LinkedList { data: [10, 7, 8, 9], len: 4, next: 0 },
+            },
+            AttackPosition {
+                p: 2,
+                q: LinkedList { data: [3, 0, 0, 0], len: 1, next: 0 },
+            },
+        ];
+
+        for _ in 0..1024 {
+            positions.extend_from_within(..5);
+        }
+
+        let heap = vec![
+            LinkedList { data: [4, 5, 6, 7], len: 5, next: 1 },
+            LinkedList { data: [8, 9, 10, 0], len: 3, next: 0 },
+            LinkedList { data: [10, 1, 2, 0], len: 3, next: 0 },
         ];
 
         let in_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -319,16 +130,15 @@ impl ChallengeShader {
             mapped_at_creation: false,
         });
 
-        let heap_in_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        let heap_in_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Conjunction output linked list heap storage buffer"),
-            size: (16 * mem::size_of::<LinkedList>()) as u64,
+            contents: bytemuck::cast_slice(&heap),
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
         });
 
         let heap_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Conjunction output linked list heap storage buffer"),
-            size: (16 * mem::size_of::<LinkedList>()) as u64,
+            size: (100000 * mem::size_of::<LinkedList>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -336,7 +146,7 @@ impl ChallengeShader {
         let metadata_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Conjunction metadata storage buffer"),
             contents: bytemuck::bytes_of(&Metadata::default()),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
         });
 
         let staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -432,15 +242,12 @@ impl ChallengeShader {
     }
 }
 
-struct ObservationShader {}
-
 
 pub struct GameBuild {
     lts: TransitionSystem,
     gpu: Rc<GPUCommon>,
     graph_bind_group: wgpu::BindGroup,
 
-    clause_shader: ClauseShader,
     challenge_shader: ChallengeShader,
 
     game: GameGraph,
@@ -453,8 +260,6 @@ impl GameBuild {
         let gpu = Rc::new(GPUCommon::new().await?);
         let (graph_bind_group_layout, graph_bind_group) = lts.bind_group(&gpu.device);
 
-        let clause_shader = ClauseShader::new(Rc::clone(&gpu));
-        // let conjunction_shader = ...
         let challenge_shader = ChallengeShader::new(Rc::clone(&gpu), &graph_bind_group_layout);
 
         Ok(GameBuild {
@@ -462,7 +267,6 @@ impl GameBuild {
             gpu,
             graph_bind_group,
 
-            clause_shader,
             challenge_shader,
 
             game: GameGraph::empty(EnergyConf::STANDARD),
@@ -471,44 +275,6 @@ impl GameBuild {
         })
     }
 
-    /*
-    pub async fn execute_gpu(&self) -> Result<()> {
-        let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Game build encoder"),
-        });
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Game build clause compute pass"),
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.clause_shader.pipeline);
-            cpass.set_bind_group(0, &self.clause_shader.bind_group, &[]);
-
-            cpass.dispatch_workgroups(1, 1, 1);
-        }
-        encoder.copy_buffer_to_buffer(&self.clause_shader.buf_b, 0, &self.clause_shader.staging_buf, 0, 280);
-
-        self.gpu.queue.submit(Some(encoder.finish()));
-        let (sender, receiver) = futures_intrusive::channel::shared::channel(1);
-        let staging_slice = self.clause_shader.staging_buf.slice(..);
-        staging_slice.map_async(wgpu::MapMode::Read, move |v| {
-            sender.try_send(v).expect("Channel should be writable");
-        });
-
-        self.gpu.device.poll(wgpu::Maintain::Wait);
-        receiver.receive().await.expect("Channel should not be closed")?;
-
-        let raw_data = staging_slice.get_mapped_range();
-        let data: &[Position] = bytemuck::cast_slice(&raw_data);
-
-        println!("{:?}", data);
-
-        drop(raw_data);
-        self.clause_shader.staging_buf.unmap();
-
-        Ok(())
-    }
-    */
     pub async fn execute_gpu(&self) -> Result<()> {
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Game build encoder"),
@@ -523,7 +289,7 @@ impl GameBuild {
             cpass.set_bind_group(1, &self.challenge_shader.bind_groups[1], &[]);
             cpass.set_bind_group(2, &self.graph_bind_group, &[]);
 
-            cpass.dispatch_workgroups(1, 1, 1);
+            cpass.dispatch_workgroups(self.challenge_shader.positions.len().div_ceil(64) as u32, 1, 1);
         }
         let staging_buf = &self.challenge_shader.staging_buf;
         encoder.copy_buffer_to_buffer(&self.challenge_shader.out_buf, 0, staging_buf, 0, self.challenge_shader.out_buf.size());
@@ -548,9 +314,24 @@ impl GameBuild {
         let pos_out: &[DefendPosition] = bytemuck::cast_slice(&raw_data[..self.challenge_shader.out_buf.size() as usize]);
         let heap: &[LinkedList] = bytemuck::cast_slice(
             &raw_data[self.challenge_shader.out_buf.size() as usize .. (self.challenge_shader.out_buf.size() + self.challenge_shader.heap_buf.size()) as usize]);
+
         let metadata: &Metadata = bytemuck::from_bytes(
             &raw_data[(self.challenge_shader.out_buf.size() + self.challenge_shader.heap_buf.size()) as usize ..]);
+        if metadata.heap_top > 100000 {
+            panic!("Heap overflow");
+        }
 
+        let mut map = HashMap::new();
+        let mut n = 0;
+        for pos in pos_out {
+            let real_pos = Position::defend(*pos, heap);
+            if !map.contains_key(&real_pos) {
+                map.insert(real_pos, n);
+            }
+            n += 1;
+        }
+
+        /*
         for p in pos_out {
             println!("{p}");
         }
@@ -559,9 +340,13 @@ impl GameBuild {
             println!("{i}:\t {h}");
         }
         println!("Metadata: {:?}", metadata);
+        */
 
         drop(raw_data);
         self.challenge_shader.staging_buf.unmap();
+
+        let metadata = Metadata { ..Default::default() };
+        self.gpu.queue.write_buffer(&self.challenge_shader.metadata_buf, 0, bytemuck::bytes_of(&metadata));
 
         Ok(())
     }

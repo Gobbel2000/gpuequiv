@@ -34,7 +34,7 @@ fn _multidimensional() -> EnergyGame {
             (14, 16, update![0, 0, -1]),
             (16, 17, update![0, 0, -1]),
         ],
-        &attacker_pos,
+        attacker_pos,
         conf,
     );
     EnergyGame::standard_reach(graph)
@@ -73,7 +73,7 @@ fn combinations() -> EnergyGame {
 
             (4, 19, update![0, 0, 0, 0, 0, -1]),
         ],
-        &attacker_pos,
+        attacker_pos,
         conf,
     );
     EnergyGame::standard_reach(graph)
@@ -91,7 +91,7 @@ async fn energy_game() {
 
 async fn build_game() -> io::Result<()> {
     let lts = gamebuild::TransitionSystem::new(
-        5,
+        3,
         vec![
             (0, 0, 0),
             (0, 2, 0),
@@ -101,7 +101,7 @@ async fn build_game() -> io::Result<()> {
             (2, 2, 0),
         ],
     );
-    let runner = gamebuild::GPURunner::with_lts(lts).await.unwrap();
+    let runner = gamebuild::GameBuild::with_lts(lts).await.unwrap();
     runner.execute_gpu().await.unwrap();
     Ok(())
 }
