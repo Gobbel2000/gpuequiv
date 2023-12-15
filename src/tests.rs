@@ -29,7 +29,7 @@ fn simple_graph() -> EnergyGame {
             (14, 16, update![0, 0, -1]),
             (16, 17, update![0, 0, -1]),
         ],
-        &attacker_pos,
+        attacker_pos,
         conf,
     );
     EnergyGame::standard_reach(graph)
@@ -115,7 +115,7 @@ async fn fork() {
             (1, 2, update![-1, 0]),
             (1, 3, update![0, -1]),
         ],
-        &[false, true, false, false],
+        [false, true, false, false].to_vec(),
         c,
     );
     let mut game = EnergyGame::standard_reach(graph);
@@ -163,7 +163,7 @@ fn combinations_graph() -> EnergyGame {
 
             (4, 19, update![0, 0, 0, 0, 0, -1]),
         ],
-        &attacker_pos,
+        attacker_pos,
         conf,
     );
     EnergyGame::standard_reach(graph)
@@ -230,7 +230,7 @@ fn wide(single: u32, double: u32) -> (EnergyGame, Vec<EnergyArray>) {
     let graph = GameGraph::new(
         n_nodes,
         edges,
-        &attacker_pos,
+        attacker_pos,
         c,
     );
 
