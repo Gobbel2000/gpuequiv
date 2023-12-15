@@ -102,7 +102,7 @@ async fn build_game() -> io::Result<()> {
         ],
     );
     let runner = gamebuild::GameBuild::with_lts(lts).await.unwrap();
-    runner.execute_gpu().await.unwrap();
+    //runner.execute_gpu().await.unwrap();
     Ok(())
 }
 
