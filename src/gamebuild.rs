@@ -1,5 +1,8 @@
-use std::{mem, iter, fmt};
+pub mod gamepos;
+
+use std::{mem, iter};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use wgpu::util::DeviceExt;
@@ -7,6 +10,11 @@ use wgpu::{BufferUsages, Buffer};
 
 use crate::utils::{GPUCommon, bgl_entry, GPUGraph};
 use crate::error::Result;
+use crate::energy::EnergyConf;
+use crate::GameGraph;
+
+use gamepos::*;
+
 
 pub struct TransitionSystem {
     pub adj: Vec<Vec<u32>>,
@@ -61,91 +69,12 @@ impl GPUGraph for TransitionSystem {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-struct LinkedList {
-    data: [u32; 4],
-    len: u32,
-    next: u32,
-}
-
-impl fmt::Display for LinkedList {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[")?;
-        for i in 0..self.len.min(4) {
-            if i == 0 {
-                write!(f, "{}", self.data[i as usize])?;
-            } else {
-                write!(f, ", {}", self.data[i as usize])?;
-            }
-        }
-        write!(f, "]")?;
-        if self.len > 4 {
-            write!(f, "->{}", self.next)?;
-        }
-        Ok(())
-    }
-}
-
-// Enable bytemucking for filling buffers
-unsafe impl bytemuck::Zeroable for LinkedList {}
-unsafe impl bytemuck::Pod for LinkedList {}
-
-#[repr(C)]
-#[allow(non_snake_case)]
-#[derive(Debug, Copy, Clone)]
-struct Position {
-    p: u32,
-    Q: LinkedList,
-}
-
-impl fmt::Display for Position {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Attacker Position: p = {},\t Q = {}",
-               self.p, self.Q,
-        )
-    }
-}
-
-unsafe impl bytemuck::Zeroable for Position {}
-unsafe impl bytemuck::Pod for Position {}
-
-#[repr(C)]
-#[allow(non_snake_case)]
-#[derive(Debug, Copy, Clone)]
-struct ConjunctionPosition {
-    p: u32,
-    Q: LinkedList,
-    Qx: LinkedList,
-}
-
-impl fmt::Display for ConjunctionPosition {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Defender Conjunction Position: p = {},\t Q = {},\t Q* = {}",
-               self.p, self.Q, self.Qx,
-        )
-    }
-}
-
-unsafe impl bytemuck::Zeroable for ConjunctionPosition {}
-unsafe impl bytemuck::Pod for ConjunctionPosition {}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-struct Metadata {
-    heap_top: u32,
-    heap_oom: u32,
-}
-
-unsafe impl bytemuck::Zeroable for Metadata {}
-unsafe impl bytemuck::Pod for Metadata {}
-
 
 struct ClauseShader {
     gpu: Rc<GPUCommon>,
-    positions: Vec<Position>,
-    buf_a: Buffer,
-    buf_b: Buffer,
+    positions: Vec<SingletonPosition>,
+    in_buf: Buffer,
+    out_buf: Buffer,
     staging_buf: Buffer,
 
     bind_group: wgpu::BindGroup,
@@ -156,25 +85,19 @@ struct ClauseShader {
 impl ClauseShader {
     fn new(gpu: Rc<GPUCommon>) -> Self {
         let pos = vec![
-            Position {
-                p: 4,
-                Q: LinkedList { data: [3, 0, 0, 0], len: 1, next: 0 },
-            },
-            Position {
-                p: 7,
-                Q: LinkedList { data: [9, 2, 0, 0], len: 2, next: 0 },
-            },
+            SingletonPosition { p: 4, q: 3 },
+            SingletonPosition { p: 7, q: 9 },
         ];
 
-        let buf_a = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let in_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Clause buffer A"),
             contents: bytemuck::cast_slice(&pos),
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         });
 
-        let buf_b = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        let out_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Clause buffer B"),
-            size: 280,
+            size: in_buf.size() * 2,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -200,11 +123,11 @@ impl ClauseShader {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buf_a.as_entire_binding(),
+                    resource: in_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: buf_b.as_entire_binding(),
+                    resource: out_buf.as_entire_binding(),
                 },
             ],
         });
@@ -230,19 +153,29 @@ impl ClauseShader {
         ClauseShader {
             gpu,
             positions: pos,
-            buf_a,
-            buf_b,
+            in_buf,
+            out_buf,
             staging_buf,
             bind_group,
             bind_group_layout,
             pipeline,
         }
     }
+
+    /*
+    fn process_results(&mut self, map: &HashMap<Position, u32>) -> Vec<AttackPosition> {
+        let data = self.out_buf.slice(..).get_mapped_range();
+        let pos_out: &[SingletonPosition] = bytemuck::cast_slice(&data);
+        for (start, out) in self.positions.iter().zip(pos_out.windows(2)) {
+            
+        }
+    }
+    */
 }
 
 struct ConjunctionShader {
     gpu: Rc<GPUCommon>,
-    positions: Vec<ConjunctionPosition>,
+    positions: Vec<DefendPosition>,
     conjunction_buf: Buffer,
     out_buf: Buffer,
     staging_buf: Buffer,
@@ -352,7 +285,7 @@ impl ConjunctionShader {
 
 struct ChallengeShader {
     gpu: Rc<GPUCommon>,
-    positions: Vec<Position>,
+    positions: Vec<AttackPosition>,
     in_buf: Buffer,
     out_buf: Buffer,
     heap_buf: Buffer,
@@ -366,9 +299,9 @@ struct ChallengeShader {
 impl ChallengeShader {
     fn new(gpu: Rc<GPUCommon>, graph_layout: &wgpu::BindGroupLayout) -> Self {
         let positions = vec![
-            Position {
+            AttackPosition {
                 p: 1,
-                Q: LinkedList { data: [0, 2, 0, 0], len: 2, next: 0 },
+                q: LinkedList { data: [0, 2, 0, 0], len: 2, next: 0 },
             },
         ];
 
@@ -381,7 +314,7 @@ impl ChallengeShader {
         let out_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Challenge output storage buffer"),
             // Allocate size for 4 output positions per input position
-            size: (positions.len() * 4 * mem::size_of::<ConjunctionPosition>()) as u64,
+            size: (positions.len() * 4 * mem::size_of::<DefendPosition>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -502,16 +435,20 @@ impl ChallengeShader {
 struct ObservationShader {}
 
 
-pub struct GPURunner {
+pub struct GameBuild {
     lts: TransitionSystem,
     gpu: Rc<GPUCommon>,
     graph_bind_group: wgpu::BindGroup,
 
     clause_shader: ClauseShader,
     challenge_shader: ChallengeShader,
+
+    game: GameGraph,
+    nodes: Vec<Rc<Position>>,
+    node_map: HashMap<Rc<Position>, usize>,
 }
 
-impl GPURunner {
+impl GameBuild {
     pub async fn with_lts(lts: TransitionSystem) -> Result<Self> {
         let gpu = Rc::new(GPUCommon::new().await?);
         let (graph_bind_group_layout, graph_bind_group) = lts.bind_group(&gpu.device);
@@ -520,13 +457,17 @@ impl GPURunner {
         // let conjunction_shader = ...
         let challenge_shader = ChallengeShader::new(Rc::clone(&gpu), &graph_bind_group_layout);
 
-        Ok(GPURunner {
+        Ok(GameBuild {
             lts,
             gpu,
             graph_bind_group,
 
             clause_shader,
             challenge_shader,
+
+            game: GameGraph::empty(EnergyConf::STANDARD),
+            nodes: Vec::new(),
+            node_map: HashMap::new(),
         })
     }
 
@@ -604,7 +545,7 @@ impl GPURunner {
         receiver.receive().await.expect("Channel should not be closed")?;
 
         let raw_data = staging_slice.get_mapped_range();
-        let pos_out: &[ConjunctionPosition] = bytemuck::cast_slice(&raw_data[..self.challenge_shader.out_buf.size() as usize]);
+        let pos_out: &[DefendPosition] = bytemuck::cast_slice(&raw_data[..self.challenge_shader.out_buf.size() as usize]);
         let heap: &[LinkedList] = bytemuck::cast_slice(
             &raw_data[self.challenge_shader.out_buf.size() as usize .. (self.challenge_shader.out_buf.size() + self.challenge_shader.heap_buf.size()) as usize]);
         let metadata: &Metadata = bytemuck::from_bytes(
