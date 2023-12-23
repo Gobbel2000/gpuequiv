@@ -101,8 +101,13 @@ async fn build_game() -> io::Result<()> {
             (2, 2, 0),
         ],
     );
-    let runner = gamebuild::GameBuild::with_lts(lts).await.unwrap();
-    //runner.execute_gpu().await.unwrap();
+    let mut builder = gamebuild::GameBuild::with_lts(lts).unwrap();
+    builder.build(0, 1);
+    let f = File::create("built_graph.json").unwrap();
+    serde_json::to_writer_pretty(f, &builder.game).unwrap();
+    for (i, p) in builder.nodes.iter().enumerate() {
+        println!("{i}: \t{p}");
+    }
     Ok(())
 }
 

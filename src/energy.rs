@@ -397,7 +397,7 @@ impl From<Upd> for i32 {
 
 #[derive(Clone, PartialEq)]
 pub struct Update{
-    data: Vec<u32>,
+    pub(crate) data: Vec<u32>,
     conf: EnergyConf,
 }
 
@@ -465,7 +465,7 @@ impl From<&Update> for Vec<Upd> {
             vec.push(match val {
                 0 => Upd::Zero,
                 1 => Upd::Decrement,
-                idx => Upd::Min((idx - 1) as u32),
+                idx => Upd::Min(idx - 1),
             });
 
             shift += update.conf.update_bits();
@@ -513,11 +513,15 @@ macro_rules! update {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpdateArray {
-    array: Array2<u32>,
+    pub(crate) array: Array2<u32>,
     conf: EnergyConf,
 }
 
 impl UpdateArray {
+    pub fn empty(conf: EnergyConf) -> Self {
+        Self::zero(0, conf)
+    }
+
     pub fn zero(n: usize, conf: EnergyConf) -> Self {
         let array = Array2::zeros((n, conf.update_size() as usize));
         Self {
@@ -618,8 +622,7 @@ impl TryFrom<&[Update]> for UpdateArray {
             return Err("Mismatched energy configurations");
         }
         let flat: Vec<u32> = updates.iter()
-            .map(|u| &u.data)
-            .flatten()
+            .flat_map(|u| &u.data)
             .copied()
             .collect();
         let array = Array2::from_shape_vec((updates.len(), conf.update_size() as usize), flat)
@@ -678,7 +681,7 @@ impl FromEnergyConf<&[Vec<i32>]> for UpdateArray {
     }
 }
 
-impl<'a> FromEnergyConf<&[&[i32]]> for UpdateArray {
+impl FromEnergyConf<&[&[i32]]> for UpdateArray {
     type Error = &'static str;
     fn from_conf(updates: &[&[i32]], conf: EnergyConf) -> Result<Self, Self::Error> {
         let upds: Vec<Vec<Upd>> = updates.iter().map(|row| row.iter()
