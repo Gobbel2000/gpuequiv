@@ -3,6 +3,7 @@ use std::env;
 use std::io;
 
 use gpuequiv::*;
+use gpuequiv::energygame::*;
 
 // Varied, multidimensional updates, leading to multidimensional energies
 fn _multidimensional() -> EnergyGame {

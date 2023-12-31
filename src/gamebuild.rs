@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::error::Result;
 use crate::energy::{EnergyConf, UpdateArray};
-use crate::GameGraph;
+use crate::energygame::GameGraph;
 
 use gamepos::*;
 
@@ -161,7 +161,12 @@ impl GameBuild {
     }
 
     // Assumes that `positions` contains no duplicates
-    fn add_nodes(&mut self, start: usize, positions: Vec<Position>, weights: UpdateArray) -> Range<u32> {
+    fn add_nodes(
+        &mut self,
+        start: usize,
+        positions: Vec<Position>,
+        weights: UpdateArray,
+    ) -> Range<u32> {
         let first_new = self.game.adj.len() as u32;
         // Gather indices of provided positions
         self.game.adj[start] = positions.into_iter().map(|pos|

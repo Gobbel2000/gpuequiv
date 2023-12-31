@@ -1,4 +1,5 @@
-use super::*;
+use gpuequiv::*;
+use gpuequiv::energygame::*;
 
 fn simple_graph() -> EnergyGame {
     let conf = EnergyConf::STANDARD;

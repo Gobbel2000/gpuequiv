@@ -1,9 +1,6 @@
-pub mod energy;
-pub mod shaderutils;
-pub mod gamebuild;
-
-mod utils;
-pub mod error;
+// Private submodules
+mod shadergen;
+mod gpuutils;
 
 use std::collections::HashSet;
 use std::result;
@@ -18,14 +15,10 @@ use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device};
 use wgpu::util::DeviceExt;
 
-
-pub use error::*;
-pub use crate::energy::{
-    EnergyConf, EnergyArray, Energy, UpdateArray, Update, Upd,
-    IntoEnergyConf, FromEnergyConf,
-};
-use utils::{GPUCommon, bgl_entry, buffer_fits, GPUGraph};
-use crate::shaderutils::{ShaderPreproc, make_replacements,
+use crate::error::*;
+use crate::energy::*;
+use gpuutils::{GPUCommon, bgl_entry, buffer_fits, GPUGraph};
+use shadergen::{ShaderPreproc, make_replacements,
     build_attack, build_defend_update, build_defend_combine};
 
 // Spawn 64 threads with each workgroup invocation
@@ -116,7 +109,7 @@ impl GameGraph {
         edges: Vec<(u32, u32, T)>,
         attacker_pos: Vec<bool>,
         conf: EnergyConf,
-    ) -> Self 
+    ) -> Self
     where
         // Accept any type T for weights that can be turned into a row of an UpdateArray
         for<'a> UpdateArray: FromEnergyConf<&'a [T]>,
@@ -316,7 +309,7 @@ trait PlayerShader {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        
+
         // For reading minima_buf on the CPU
         let minima_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&format!("{} Minima output staging buffer", Self::name())),
@@ -729,7 +722,7 @@ impl DefendShader {
         }
         let n_sup = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
             .sup_offset;
-        let workgroup_count = n_sup.div_ceil(WORKGROUP_SIZE); 
+        let workgroup_count = n_sup.div_ceil(WORKGROUP_SIZE);
         { // Compute pass for taking suprema of combinations
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Defend suprema of combinations compute pass"),
@@ -1268,7 +1261,3 @@ impl<'a> GPURunner<'a> {
         }
     }
 }
-
-
-#[cfg(test)]
-mod tests;
