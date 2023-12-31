@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use regex::{Regex, Captures};
+use rustc_hash::FxHashMap;
 use wgpu::ShaderSource;
 
 use crate::energy::EnergyConf;
@@ -10,7 +10,7 @@ use crate::energy::EnergyConf;
 
 #[derive(Default)]
 pub struct ShaderPreproc<'r> {
-    replacements: HashMap<&'r str, String>
+    replacements: FxHashMap<&'r str, String>
 }
 
 impl<'r> ShaderPreproc<'r> {

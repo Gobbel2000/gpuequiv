@@ -1,9 +1,11 @@
 pub mod gamepos;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::rc::Rc;
+
+use rustc_hash::FxHashMap;
 
 use crate::TransitionSystem;
 use crate::energy::{EnergyConf, UpdateArray};
@@ -95,7 +97,7 @@ pub struct GameBuild {
     lts: TransitionSystem,
     pub game: GameGraph,
     pub nodes: Vec<Rc<Position>>,
-    node_map: HashMap<Rc<Position>, u32>,
+    node_map: FxHashMap<Rc<Position>, u32>,
 }
 
 impl GameBuild {
@@ -106,7 +108,7 @@ impl GameBuild {
             lts,
             game: GameGraph::empty(Self::ENERGY_CONF),
             nodes: Vec::new(),
-            node_map: HashMap::new(),
+            node_map: FxHashMap::default(),
         }
     }
 

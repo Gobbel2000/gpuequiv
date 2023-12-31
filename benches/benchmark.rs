@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use gpuequiv::*;
+use gpuequiv::energygame::*;
 
 use criterion::{criterion_group, criterion_main, Criterion, async_executor::AsyncExecutor};
 

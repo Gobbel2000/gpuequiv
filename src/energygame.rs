@@ -2,7 +2,6 @@
 mod shadergen;
 mod gpuutils;
 
-use std::collections::HashSet;
 use std::result;
 use std::iter;
 use std::rc::Rc;
@@ -11,6 +10,7 @@ use futures_intrusive::channel::shared::{Sender, channel};
 use log::Level::Trace;
 use log::{trace, log_enabled};
 use ndarray::{Array2, Axis};
+use rustc_hash::FxHashSet;
 use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device};
 use wgpu::util::DeviceExt;
@@ -324,7 +324,7 @@ trait PlayerShader {
 
 struct DefendShader {
     gpu: Rc<GPUCommon>,
-    visit_list: HashSet<u32>,
+    visit_list: FxHashSet<u32>,
 
     energies: EnergyArray,
     energies_buf: Buffer,
@@ -358,7 +358,7 @@ impl DefendShader {
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
     ) -> Result<DefendShader> {
-        let mut visit_list: HashSet<u32> = HashSet::new();
+        let mut visit_list: FxHashSet<u32> = FxHashSet::default();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
             for &w in &game.graph.reverse[v as usize] {
@@ -654,7 +654,7 @@ impl DefendShader {
     }
 
     fn collect_data(
-        visit_list: &HashSet<u32>,
+        visit_list: &FxHashSet<u32>,
         game: &EnergyGame,
     ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
@@ -756,7 +756,7 @@ impl DefendShader {
         });
     }
 
-    fn process_results(&mut self, atk_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
+    fn process_results(&mut self, atk_visit_list: &mut FxHashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
 
@@ -815,7 +815,7 @@ impl DefendShader {
 
 struct AttackShader {
     gpu: Rc<GPUCommon>,
-    visit_list: HashSet<u32>,
+    visit_list: FxHashSet<u32>,
     energies: EnergyArray,
     energies_buf: Buffer,
     energies_staging_buf: Buffer,
@@ -842,7 +842,7 @@ impl AttackShader {
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
     ) -> Result<AttackShader> {
-        let mut visit_list: HashSet<u32> = HashSet::new();
+        let mut visit_list: FxHashSet<u32> = FxHashSet::default();
         for &v in &game.to_reach {
             // Start with parent nodes of final points
             for &w in &game.graph.reverse[v as usize] {
@@ -1013,7 +1013,7 @@ impl AttackShader {
     }
 
     fn collect_data(
-        visit_list: &HashSet<u32>,
+        visit_list: &FxHashSet<u32>,
         game: &EnergyGame
     ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray)> {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
@@ -1093,7 +1093,7 @@ impl AttackShader {
         });
     }
 
-    fn process_results(&mut self, def_visit_list: &mut HashSet<u32>, game: &mut EnergyGame) {
+    fn process_results(&mut self, def_visit_list: &mut FxHashSet<u32>, game: &mut EnergyGame) {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
 

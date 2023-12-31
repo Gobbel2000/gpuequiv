@@ -673,6 +673,7 @@ dependencies = [
  "ndarray",
  "pollster",
  "regex",
+ "rustc-hash",
  "serde",
  "serde_json",
  "wasm-bindgen-futures",

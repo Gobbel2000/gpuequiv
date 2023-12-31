@@ -1,6 +1,6 @@
 use std::fmt;
-use std::collections::HashSet;
 
+use rustc_hash::FxHashSet;
 use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1};
 use serde::{Serialize, Deserialize};
 
@@ -253,7 +253,7 @@ impl PartialEq for EnergyArray {
         if self.array.len() != other.array.len() {
             return false;
         }
-        let set: HashSet<ArrayView1<u32>> = self.array.rows().into_iter().collect();
+        let set: FxHashSet<ArrayView1<u32>> = self.array.rows().into_iter().collect();
         for row in other.array.rows() {
             if !set.contains(&row) {
                 return false;
