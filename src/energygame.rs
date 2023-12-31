@@ -82,7 +82,7 @@ impl TryFrom<SerdeGameGraph> for GameGraph {
     }
 }
 
-fn make_reverse(adj: &Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+pub fn make_reverse(adj: &Vec<Vec<u32>>) -> Vec<Vec<u32>> {
     let mut reverse = vec![vec![]; adj.len()];
     for (from, adj) in adj.iter().enumerate() {
         for to in adj {
@@ -557,9 +557,9 @@ impl DefendShader {
         self.energies = energies;
 
         // Make sure the node offsets buffer always has exactly the right size
-        if node_offsets.len() * std::mem::size_of::<NodeOffsetAtk>() != self.node_offsets_buf.size() as usize {
+        if node_offsets.len() * std::mem::size_of::<NodeOffsetDef>() != self.node_offsets_buf.size() as usize {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("{} Node offsets storage buffer", Self::name())),
+                label: Some("Defend node offsets storage buffer"),
                 contents: bytemuck::cast_slice(&node_offsets),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });

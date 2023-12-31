@@ -5,50 +5,13 @@ use std::cmp::Ordering;
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::error::Result;
+use crate::TransitionSystem;
 use crate::energy::{EnergyConf, UpdateArray};
-use crate::energygame::GameGraph;
+use crate::energygame::{GameGraph, make_reverse};
 
 use gamepos::*;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Transition {
-    process: u32,
-
-    // Transition labels encoded as i32:
-    // 0 => τ
-    // k => Channel index k, k ∈ ℕ
-    // -k => Co-Action of k, k ∈ ℕ
-    //
-    // Actual names (Strings) should be stored in a separate list
-    label: i32,
-}
-
-pub struct TransitionSystem {
-    pub adj: Vec<Vec<Transition>>,
-}
-
 impl TransitionSystem {
-    pub fn new(n_vertices: u32, edges: Vec<(u32, u32, i32)>) -> Self {
-        let mut adj = vec![vec![]; n_vertices as usize];
-        for (from, to, label) in edges {
-            adj[from as usize].push(Transition { process: to, label });
-        }
-        let mut lts = TransitionSystem { adj };
-        lts.sort_labels();
-        lts
-    }
-
-    pub fn sort_labels(&mut self) {
-        for row in self.adj.iter_mut() {
-            row.sort_by_key(|t| t.label);
-        }
-    }
-
-    pub fn n_vertices(&self) -> u32 {
-        self.adj.len() as u32
-    }
-
     fn compare_enabled(&self, p: u32, q: u32) -> (bool, bool) {
         if p == q {
             return (true, true);
@@ -138,13 +101,13 @@ pub struct GameBuild {
 impl GameBuild {
     const ENERGY_CONF: EnergyConf = EnergyConf::STANDARD;
 
-    pub fn with_lts(lts: TransitionSystem) -> Result<Self> {
-        Ok(GameBuild {
+    pub fn with_lts(lts: TransitionSystem) -> Self {
+        GameBuild {
             lts,
             game: GameGraph::empty(Self::ENERGY_CONF),
             nodes: Vec::new(),
             node_map: HashMap::new(),
-        })
+        }
     }
 
     pub fn build(&mut self, p: u32, q: u32) {
@@ -158,6 +121,7 @@ impl GameBuild {
             let new_indices = self.add_nodes(idx as usize, positions, weights);
             frontier.extend(new_indices);
         }
+        self.game.reverse = make_reverse(&self.game.adj);
     }
 
     // Assumes that `positions` contains no duplicates

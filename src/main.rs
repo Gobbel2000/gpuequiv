@@ -91,7 +91,7 @@ async fn energy_game() {
 }
 
 async fn build_game() -> io::Result<()> {
-    let lts = gamebuild::TransitionSystem::new(
+    let lts = TransitionSystem::new(
         3,
         vec![
             (0, 0, 0),
@@ -102,7 +102,7 @@ async fn build_game() -> io::Result<()> {
             (2, 2, 0),
         ],
     );
-    let mut builder = gamebuild::GameBuild::with_lts(lts).unwrap();
+    let mut builder = gamebuild::GameBuild::with_lts(lts);
     builder.build(0, 1);
     let f = File::create("built_graph.json").unwrap();
     serde_json::to_writer_pretty(f, &builder.game).unwrap();
@@ -126,6 +126,22 @@ async fn run_json_graph() -> io::Result<()> {
     Ok(()) 
 }
 
+async fn all() -> io::Result<()> {
+    let lts = TransitionSystem::new(
+        3,
+        vec![
+            (0, 0, 0),
+            (0, 2, 0),
+            (0, 2, 1),
+            (1, 1, 0),
+            (1, 2, 1),
+            (2, 2, 0),
+        ],
+    );
+    lts.winning_budgets(0, 1).await.unwrap();
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
     let mut args = env::args_os();
@@ -133,6 +149,7 @@ fn main() -> io::Result<()> {
         1 => Ok(pollster::block_on(energy_game())),
         2 => match args.nth(1).unwrap().to_str() {
             Some("build") => pollster::block_on(build_game()),
+            Some("all") => pollster::block_on(all()),
             _ => pollster::block_on(run_json_graph()),
         },
         _ => {
