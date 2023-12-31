@@ -137,7 +137,7 @@ impl GameGraph {
 
         Self {
             adj,
-            reverse: reverse.into(),
+            reverse,
             weights,
             attacker_pos,
             conf,
@@ -172,8 +172,7 @@ impl GPUGraph for GameGraph {
             .copied()
             .collect();
         let weights = self.weights.iter()
-            .map(|e| e.data())
-            .flatten()
+            .flat_map(|e| e.data())
             .copied()
             .collect();
         // Cumulative sum of all list lengths. 0 is prepended manually
@@ -300,7 +299,7 @@ trait PlayerShader {
         } else {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Successor offsets storage buffer", Self::name())),
-                contents: bytemuck::cast_slice(&successor_offsets),
+                contents: bytemuck::cast_slice(successor_offsets),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             })
         }
@@ -558,7 +557,7 @@ impl DefendShader {
 
         //if !buffer_fits(&energies, &self.energies_buf) {
         if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
-            self.energies_buf = Self::get_energies_buf(&device, &energies);
+            self.energies_buf = Self::get_energies_buf(device, &energies);
         } else {
             queue.write_buffer(&self.energies_buf, 0, energies.data());
         }
@@ -577,7 +576,7 @@ impl DefendShader {
         self.node_offsets = node_offsets;
 
         if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
-            self.successor_offsets_buf = Self::get_successor_offsets_buf(&device, &successor_offsets);
+            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
         } else {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
         }
@@ -602,7 +601,7 @@ impl DefendShader {
 
         let minima_capacity = Self::minima_size(sup_size);
         if minima_capacity * std::mem::size_of::<u32>() > self.minima_buf.size() as usize {
-            (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(&device, minima_capacity);
+            (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(device, minima_capacity);
         }
 
         self.update_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -792,7 +791,7 @@ impl DefendShader {
             let prev = &game.energies[cur.node as usize];
 
             let indices: Vec<usize> = (cur.sup_offset as usize..next_offset as usize)
-                .filter(|i| minima[i / MINIMA_SIZE] & (1 << i % MINIMA_SIZE) != 0)
+                .filter(|i| minima[i / MINIMA_SIZE] & (1 << (i % MINIMA_SIZE)) != 0)
                 .collect();
 
             let new_array = suprema.view().select(Axis(0), indices.as_slice());
@@ -960,7 +959,7 @@ impl AttackShader {
         let (node_offsets, successor_offsets, energies) = Self::collect_data(&self.visit_list, game)?;
 
         if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
-            self.energies_buf = Self::get_energies_buf(&device, &energies);
+            self.energies_buf = Self::get_energies_buf(device, &energies);
             self.energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Energies staging buffer", Self::name())),
                 size: self.energies_buf.size(),
@@ -985,14 +984,14 @@ impl AttackShader {
         self.node_offsets = node_offsets;
 
         if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
-            self.successor_offsets_buf = Self::get_successor_offsets_buf(&device, &successor_offsets);
+            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
         } else {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
         }
 
         let minima_capacity = Self::minima_size(self.energies.n_energies());
         if minima_capacity * std::mem::size_of::<u32>() > self.minima_buf.size() as usize {
-            (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(&device, minima_capacity);
+            (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(device, minima_capacity);
         }
 
         self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1169,7 +1168,7 @@ impl AttackShader {
 
             if changed {
                 let indices: Vec<usize> = (cur.offset as usize..next_offset as usize)
-                    .filter(|i| minima[i / MINIMA_SIZE as usize] & (1 << i % MINIMA_SIZE as usize) != 0)
+                    .filter(|i| minima[i / MINIMA_SIZE as usize] & (1 << (i % MINIMA_SIZE as usize)) != 0)
                     .collect();
 
                 // Write new, filtered energies
@@ -1213,8 +1212,8 @@ impl<'a> GPURunner<'a> {
         let (graph_bind_group_layout, graph_bind_group) = game.graph.bind_group(&gpu_common.device);
         let preprocessor = make_replacements(game.graph.get_conf());
 
-        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout, &preprocessor)?;
-        let def_shader = DefendShader::new(Rc::clone(&gpu_common), &game, &graph_bind_group_layout, &preprocessor)?;
+        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), game, &graph_bind_group_layout, &preprocessor)?;
+        let def_shader = DefendShader::new(Rc::clone(&gpu_common), game, &graph_bind_group_layout, &preprocessor)?;
 
         Ok(GPURunner {
             game,
@@ -1255,8 +1254,8 @@ impl<'a> GPURunner<'a> {
                 receiver.receive().await.expect("Channel should not be closed")?;
             }
 
-            self.atk_shader.process_results(&mut self.def_shader.visit_list, &mut self.game);
-            self.def_shader.process_results(&mut self.atk_shader.visit_list, &mut self.game);
+            self.atk_shader.process_results(&mut self.def_shader.visit_list, self.game);
+            self.def_shader.process_results(&mut self.atk_shader.visit_list, self.game);
 
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
@@ -1264,8 +1263,8 @@ impl<'a> GPURunner<'a> {
                 return Ok(());
             }
 
-            self.atk_shader.update(&self.game)?;
-            self.def_shader.update(&self.game)?;
+            self.atk_shader.update(self.game)?;
+            self.def_shader.update(self.game)?;
         }
     }
 }

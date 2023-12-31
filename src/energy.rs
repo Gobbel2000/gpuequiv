@@ -299,8 +299,7 @@ impl TryFrom<&[Energy]> for EnergyArray {
             return Err("Mismatched energy configurations");
         }
         let flat: Vec<u32> = energies.iter()
-            .map(|u| &u.data)
-            .flatten()
+            .flat_map(|u| &u.data)
             .copied()
             .collect();
         let array = Array2::from_shape_vec((energies.len(), conf.energy_size() as usize), flat)

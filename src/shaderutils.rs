@@ -7,15 +7,14 @@ use crate::energy::EnergyConf;
 use regex::{Regex, Captures};
 use wgpu::ShaderSource;
 
+#[derive(Default)]
 pub struct ShaderPreproc<'r> {
     replacements: HashMap<&'r str, String>
 }
 
 impl<'r> ShaderPreproc<'r> {
     pub fn new() -> Self {
-        ShaderPreproc {
-            replacements: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn define(&mut self, name: &'r str, replacement: String) {
@@ -39,7 +38,7 @@ impl<'r> ShaderPreproc<'r> {
 
     pub fn preprocess_dump<'i>(&self, input: &'i str, name: &str) -> Cow<'i, str> {
         let processed = self.preprocess(input);
-        if let Some(_) = std::env::var_os("GPUEQUIV_DUMP") {
+        if std::env::var_os("GPUEQUIV_DUMP").is_some() {
             let dir = "shaders_dump";
             let path = format!("{dir}/{name}_PP.wgsl");
             if let Err(e) = std::fs::create_dir_all(dir)
