@@ -138,7 +138,9 @@ async fn all() -> io::Result<()> {
             (2, 2, 0),
         ],
     );
-    lts.winning_budgets(0, 1).await.unwrap();
+    for e in lts.winning_budgets(0, 1).await.unwrap() {
+        println!("{e}");
+    }
     Ok(())
 }
 
