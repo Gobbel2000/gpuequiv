@@ -94,10 +94,10 @@ impl TransitionSystem {
 
 
 pub struct GameBuild {
-    lts: TransitionSystem,
+    pub lts: TransitionSystem,
     pub game: GameGraph,
     pub nodes: Vec<Rc<Position>>,
-    node_map: FxHashMap<Rc<Position>, u32>,
+    pub node_map: FxHashMap<Rc<Position>, u32>,
 }
 
 impl GameBuild {

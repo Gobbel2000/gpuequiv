@@ -25,10 +25,10 @@ impl AttackPosition {
 
         // Observation moves
         for transition in &lts.adj[self.p as usize] {
-            positions.push(Position::Attack(AttackPosition {
-                p: transition.process,
-                q: self.set_transition(lts, transition.label),
-            }));
+            positions.push(Position::attack(
+                transition.process,
+                self.set_transition(lts, transition.label)
+            ));
         }
         let mut weights = UpdateArray::repeat(observation_update.clone(), positions.len());
 
@@ -36,11 +36,7 @@ impl AttackPosition {
         let conjunctions_start = positions.len();
         let p = self.p;
         // Q* = ∅
-        positions.push(Position::Defend(DefendPosition {
-            p,
-            q: self.q.clone(),
-            qx: Vec::new(),
-        }));
+        positions.push(Position::defend(p, self.q.clone(), Vec::new()));
 
         let mut q_subset = Vec::new();
         let mut qx_subset = Vec::new();
@@ -71,27 +67,15 @@ impl AttackPosition {
         // Check for duplicates before inserting each position.
         // This is done via linear search which is fine, since these are at most 4 positions
         // (the empty set position added above must also be considered).
-        let subset_pos = Position::Defend(DefendPosition {
-            p,
-            q: q_subset,
-            qx: qx_subset,
-        });
+        let subset_pos = Position::defend(p, q_subset, qx_subset);
         if !positions[conjunctions_start..].contains(&subset_pos) {
             positions.push(subset_pos);
         }
-        let superset_pos = Position::Defend(DefendPosition {
-            p,
-            q: q_superset,
-            qx: qx_superset,
-        });
+        let superset_pos = Position::defend(p, q_superset, qx_superset);
         if !positions[conjunctions_start..].contains(&superset_pos) {
             positions.push(superset_pos);
         }
-        let equal_pos = Position::Defend(DefendPosition {
-            p,
-            q: q_equal,
-            qx: qx_equal,
-        });
+        let equal_pos = Position::defend(p, q_equal, qx_equal);
         if !positions[conjunctions_start..].contains(&equal_pos) {
             positions.push(equal_pos);
         }
@@ -147,21 +131,13 @@ impl SingletonPosition {
             ))
         };
 
-        let positive = Position::Attack(AttackPosition {
-            p: self.p,
-            q: vec![self.q],
-        });
+        let positive = Position::attack(self.p, vec![self.q]);
         if self.p == self.q {
             (vec![positive], single_update_array.clone())
         } else {
-            (vec![positive,
-                 // Negative decision: Swap p and q
-                 Position::Attack(AttackPosition {
-                     p: self.q,
-                     q: vec![self.p],
-                 }),
-            ],
-            both_update_array.clone())
+            // Negative decision: Swap p and q
+            (vec![positive, Position::attack(self.q, vec![self.p])],
+             both_update_array.clone())
         }
     }
 }
@@ -193,15 +169,11 @@ impl DefendPosition {
         };
         let p = self.p;
         let mut positions = Vec::with_capacity(self.q.len() + (!self.qx.is_empty()) as usize);
-        positions.extend(self.q.iter().map(|&q|
-            Position::Clause(SingletonPosition { p, q })));
+        positions.extend(self.q.iter().map(|&q| Position::clause(p, q)));
         let mut weights = UpdateArray::repeat(answer_update.clone(), positions.len());
 
         if !self.qx.is_empty() {
-            positions.push(Position::Attack(AttackPosition {
-                p,
-                q: self.qx.clone(),
-            }));
+            positions.push(Position::attack(p, self.qx.clone()));
             weights.array.push_row(aview1(&revival_update.data)).unwrap();
         }
 
@@ -225,6 +197,18 @@ pub enum Position {
 }
 
 impl Position {
+    pub fn attack(p: u32, q: Vec<u32>) -> Self {
+        Position::Attack(AttackPosition { p, q })
+    }
+
+    pub fn clause(p: u32, q: u32) -> Self {
+        Position::Clause(SingletonPosition { p, q })
+    }
+
+    pub fn defend(p: u32, q: Vec<u32>, qx: Vec<u32>) -> Self {
+        Position::Defend(DefendPosition { p, q, qx })
+    }
+
     pub fn is_attack(&self) -> bool {
         matches!(self, Position::Attack(_) | Position::Clause(_))
     }
