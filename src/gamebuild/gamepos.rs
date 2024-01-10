@@ -64,20 +64,24 @@ impl AttackPosition {
             }
         }
 
-        // Check for duplicates before inserting each position.
-        // This is done via linear search which is fine, since these are at most 4 positions
-        // (the empty set position added above must also be considered).
-        let subset_pos = Position::defend(p, q_subset, qx_subset);
-        if !positions[conjunctions_start..].contains(&subset_pos) {
+        // Empty Q* is already added.
+        // Positions with empty Q don't need to be considered (unless both Q and Q* are empty).
+        if !qx_subset.is_empty() && !q_subset.is_empty() {
+            let subset_pos = Position::defend(p, q_subset, qx_subset);
             positions.push(subset_pos);
         }
-        let superset_pos = Position::defend(p, q_superset, qx_superset);
-        if !positions[conjunctions_start..].contains(&superset_pos) {
-            positions.push(superset_pos);
+        if !qx_superset.is_empty() && !q_superset.is_empty() {
+            let superset_pos = Position::defend(p, q_superset, qx_superset);
+            // Check for duplicates within these 3 positions
+            if !positions[conjunctions_start + 1..].contains(&superset_pos) {
+                positions.push(superset_pos);
+            }
         }
-        let equal_pos = Position::defend(p, q_equal, qx_equal);
-        if !positions[conjunctions_start..].contains(&equal_pos) {
-            positions.push(equal_pos);
+        if !qx_equal.is_empty() && !q_equal.is_empty() {
+            let equal_pos = Position::defend(p, q_equal, qx_equal);
+            if !positions[conjunctions_start + 1..].contains(&equal_pos) {
+                positions.push(equal_pos);
+            }
         }
 
         weights.push_n(challenge_update.clone(), positions.len() - conjunctions_start);
