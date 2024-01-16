@@ -1,4 +1,6 @@
 use std::fmt;
+use std::cmp::Ordering;
+use std::iter;
 
 use rustc_hash::FxHashSet;
 use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1};
@@ -112,6 +114,30 @@ impl Energy {
     fn_get_conf!();
 }
 
+impl PartialOrd for Energy {
+    // Element-wise partial comparison between two energy tuples
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.conf.elements != other.conf.elements {
+            panic!("Incompatible Energy configurations");
+        }
+        let mut less = true;
+        let mut greater = true;
+        for (e0, e1) in iter::zip(self.to_vec(), other.to_vec()) {
+            if e0 < e1 {
+                greater = false;
+            } else if e0 > e1 {
+                less = false;
+            }
+        }
+        match (less, greater) {
+            (true, true) => Some(Ordering::Equal),
+            (true, false) => Some(Ordering::Less),
+            (false, true) => Some(Ordering::Greater),
+            (false, false) => None,
+        }
+    }
+}
+
 fn pack_energy(values: &[u32], conf: EnergyConf) -> Option<Vec<u32>> {
     if values.len() > conf.elements as usize {
         return None;
@@ -162,6 +188,37 @@ impl fmt::Display for Energy {
         }
         Ok(())
     }
+}
+
+// Energy tuples representing notions of equivalence.
+// From: B. Bisping - Process Equivalence Problems as Energy Games
+pub mod std_equivalences {
+    use super::{Energy, EnergyConf};
+    use std::sync::OnceLock;
+
+    macro_rules! econst {
+        ($name:ident => $($x:expr),*) => {
+            pub fn $name() -> &'static Energy {
+                static ONCE: OnceLock<Energy> = OnceLock::new();
+                ONCE.get_or_init(|| {
+                    Energy::new(&[$( $x, )*], EnergyConf::STANDARD).unwrap()
+                })
+            }
+        }
+    }
+    econst!(enabledness => 1, 1);
+    econst!(traces => 3, 1);
+    econst!(failures => 3, 2, 0, 0, 1, 1);
+    econst!(failure_traces => 3, 3, 3, 0, 1, 1);
+    econst!(readiness => 3, 2, 1, 1, 1, 1);
+    econst!(readiness_traces => 3, 3, 3, 1, 1, 1);
+    econst!(revivals => 3, 2, 1, 0, 1, 1);
+    econst!(impossible_futures => 3, 2, 0, 0, 3, 1);
+    econst!(possible_futures => 3, 2, 3, 3, 3, 1);
+    econst!(simulation => 3, 3, 3, 3, 0, 0);
+    econst!(ready_simulation => 3, 3, 3, 3, 1, 1);
+    econst!(nested_2simulation => 3, 3, 3, 3, 3, 1);
+    econst!(bisimulation => 3, 3, 3, 3, 3, 3);
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -226,8 +283,35 @@ impl EnergyArray {
 
     pub fn iter(&self) -> impl Iterator<Item=Energy> + '_ {
         self.array.rows().into_iter().map(|row|
-            Energy::from_raw_data(row.as_slice()
-            .expect("Array should be contiguous and in standard layout"), self.conf))
+            Energy::from_raw_data(
+                row.as_slice().expect("Array should be contiguous and in standard layout"),
+                self.conf)
+            )
+    }
+
+    /// Test whether these winning budgets confirm the given equivalence or refute it.
+    ///
+    /// Returns `true` if the equivalence holds, otherwise `false`.
+    ///
+    /// This assumes that `self` is a set of winning budgets
+    /// calculated as the final result from solving the energy game.
+    /// If associated to an attacker game position `(p, {q})`,
+    /// this function gives insight into the equivalences between processes `p` and `q`.
+    ///
+    /// **Panics:** If `self` and `equivalence` do not have the same EnergyConfiguration.
+    pub fn test_equivalence(&self, equivalence: &Energy) -> bool {
+        if self.conf != equivalence.conf {
+            panic!("Incompatible Energy configurations");
+        }
+        // The equivalence is disproven if the equivalence's tuple lies within the set of winning
+        // energies, meaning there exists a formula within the subset of formulas characterizing
+        // the equivalence, that distinguishes the processes.
+        // Because this array holds the minimal points of an upward-closed set, the equivalence
+        // tuple must lie above (ore equal) one of these points to be in that set.
+
+        // If this array is empty, this method always returns `true`, meaning all equivalences
+        // hold, because in the energy game the attacker could not reach a distinguishing position.
+        !self.iter().any(|e| &e <= equivalence)
     }
 
     /// Constructs an EnergyArray struct from array data.
@@ -758,6 +842,30 @@ mod tests {
         assert_eq!(energy.to_vec(), vec![0, 1, 2, 0, 3, 0]);
         let a2 = EnergyArray::zero(0, conf);
         assert_eq!(a2.array.nrows(), 0);
+    }
+
+    #[test]
+    fn test_energy_ord() {
+        let c = EnergyConf { elements: 6, max: 3 };
+        let e0 = Energy::zero(c);
+        let e1 = Energy::new(&vec![1, 1, 1, 1, 1, 1], c).unwrap();
+        let e2 = Energy::new(&vec![0, 0, 0, 0, 0, 1], c).unwrap();
+        let e3 = Energy::new(&vec![1, 0, 0, 0, 0, 0], c).unwrap();
+        assert!(e0 < e1);
+        assert!(e0 < e2);
+        assert!(e2 < e1);
+        assert_eq!(e2.partial_cmp(&e3), None); // e2 and e3 are incomparable
+        assert_eq!(e3.partial_cmp(&e2), None);
+        assert_eq!(e2.partial_cmp(&e2), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn test_equivalences() {
+        // Test these to make sure the macro works properly
+        assert_eq!(std_equivalences::enabledness(),
+                   &Energy::new(&vec![1, 1], EnergyConf::STANDARD).unwrap());
+        assert_eq!(std_equivalences::bisimulation(),
+                   &Energy::new(&vec![3, 3, 3, 3, 3, 3], EnergyConf::STANDARD).unwrap());
     }
 
     #[test]
