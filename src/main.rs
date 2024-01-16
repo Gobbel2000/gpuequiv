@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs::File;
 use std::env;
 use std::io;
@@ -144,6 +145,14 @@ async fn all() -> io::Result<()> {
     Ok(())
 }
 
+async fn csv_lts(fname: &OsStr) -> io::Result<()> {
+    let lts = TransitionSystem::from_csv_file(fname)?;
+    for e in lts.winning_budgets(0, 1).await.unwrap() {
+        println!("{e}");
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
     let mut args = env::args_os();
@@ -154,9 +163,15 @@ fn main() -> io::Result<()> {
             Some("all") => pollster::block_on(all()),
             _ => pollster::block_on(run_json_graph()),
         },
-        _ => {
-            eprintln!("Invalid arguments. Usage: {:?} [file]", args.next().unwrap_or_default());
-            std::process::exit(2);
+        3 => match args.nth(1).unwrap().to_str() {
+            Some("csv") => pollster::block_on(csv_lts(&args.next().unwrap())),
+            _ => Ok(invalid_args()),
         },
+        _ => Ok(invalid_args()),
     }
+}
+
+fn invalid_args() {
+    eprintln!("Invalid arguments. Usage: {:?} [file]", env::args_os().next().unwrap_or_default());
+    std::process::exit(2);
 }
