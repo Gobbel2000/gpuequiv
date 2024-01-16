@@ -14,6 +14,11 @@ pub struct AttackPosition {
 
 impl AttackPosition {
     fn successors(&self, lts: &TransitionSystem) -> (Vec<Position>, UpdateArray) {
+        // Truncate search when Q contains p. These positions are always won by the defender.
+        if self.q.contains(&self.p) {
+            return (vec![], UpdateArray::empty(GameBuild::ENERGY_CONF));
+        }
+
         let (observation_update, challenge_update) = {
             static ONCE: OnceLock<(Update, Update)> = OnceLock::new();
             ONCE.get_or_init(|| (

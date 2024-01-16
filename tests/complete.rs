@@ -34,10 +34,8 @@ fn example_game_graph() {
             &Position::attack(2, vec![2]), // (Div, {Div}) a
             &Position::defend(0, vec![1], vec![]),  // (S, {S'}, {}) d
             &Position::defend(2, vec![1], vec![]),
-            &Position::defend(2, vec![2], vec![]),
             &Position::clause(0, 1),  // (S, S') a^
             &Position::clause(2, 1),  // (Div, S') a^
-            &Position::clause(2, 2),
             &Position::attack(1, vec![0]),
             &Position::attack(1, vec![2]),
             &Position::attack(1, vec![0, 2]),  // (S', {S, Div}) a
@@ -54,24 +52,22 @@ fn example_game_graph() {
     let adj_expected = vec![
         vec![0, 1, 2, 3],
         vec![1, 4],
-        vec![2, 5],
-        vec![6],
-        vec![7],
-        vec![8],
-        vec![0, 9],
-        vec![1, 10],
-        vec![2],
-        vec![2, 11, 12],
-        vec![10, 13, 14],
-        vec![2, 11, 15, 16],
-        vec![17],
-        vec![13, 18],
-        vec![19],
-        vec![17, 19],
-        vec![9, 19],
-        vec![0, 9],
         vec![],
-        vec![1, 10],
+        vec![5],
+        vec![6],
+        vec![0, 7],
+        vec![1, 8],
+        vec![2, 9, 10],
+        vec![8, 11, 12],
+        vec![2, 9, 13, 14],
+        vec![15],
+        vec![11, 16],
+        vec![17],
+        vec![15, 17],
+        vec![7, 17],
+        vec![0, 7],
+        vec![],
+        vec![1, 8],
     ];
     assert_eq!(builder.game.adj.len(), adj_expected.len());
     for (i, (adj, exp)) in builder.game.adj.iter().zip(adj_expected).enumerate() {
@@ -98,10 +94,8 @@ async fn example_energies() {
             EnergyArray::empty(c),  // (Div, {Div})a: Cannot be won by attacker
             earray!(c, vec![2, 2, 2, 2, 1, 1], vec![2, 3, 0, 0, 2, 3]),
             earray!(c, vec![1, 1, 0, 0, 1, 1]),
-            EnergyArray::empty(c),
             earray!(c, vec![2, 2, 0, 2, 1, 1], vec![2, 3, 0, 0, 2, 3]),
             earray!(c, vec![1, 1, 0, 0, 1, 1]),
-            EnergyArray::empty(c),
             earray!(c, vec![2, 3, 0, 0, 2, 2]),
             earray!(c, vec![1, 1]),
             earray!(c, vec![2, 3, 0, 0, 2, 2]),
