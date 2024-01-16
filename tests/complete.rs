@@ -114,3 +114,92 @@ async fn example_energies() {
         assert_eq!(en, exp, "Wrong energies for node {i}: {en} != {exp}");
     }
 }
+
+// Exercise 3.5 (page 48) from L. Aceto et. al. - Reactive Systems: Modelling, Specification and Verification
+// s0 and t0 (here 0 and 5) are bisimilar.
+fn bisimilar() -> TransitionSystem {
+    TransitionSystem::new(
+        10,
+        // Action a => 0
+        //        b => 1
+        vec![
+            (0, 1, 0), // proc 0..=4 is s0..=s4
+            (0, 2, 0),
+            (1, 3, 0),
+            (1, 4, 1),
+            (2, 4, 0),
+            (3, 0, 0),
+            (4, 0, 0),
+
+            (5, 6, 0), // proc 5..=9 is t0..=t4
+            (5, 8, 0),
+            (6, 7, 0),
+            (6, 7, 1),
+            (7, 5, 0),
+            (8, 9, 0),
+            (9, 0, 0),
+        ],
+    )
+}
+
+#[pollster::test]
+async fn test_bisimilar() {
+    let lts = bisimilar();
+    let energies = lts.winning_budgets(0, 5).await.unwrap();
+    assert_eq!(energies[0], EnergyArray::empty(EnergyConf::STANDARD));
+    assert!(energies[0].test_equivalence(std_equivalences::bisimulation()));
+}
+
+// Counterexample 3 (page 286) from R.J.v. Glabbeek - The Linear Time - Branching Time Spectrum
+// 0 ==Failure 9
+// 0 !=Failure Traces 9
+// 0 ==Readiness 9
+// 0 !=Readiness Traces 9
+//
+// 0 := a(b + cd) + a(f + ce)
+// 9 := a(b + ce) + a(f + cd)
+//
+// a..=f => 0..=5
+fn failure_trace() -> TransitionSystem {
+    TransitionSystem::new(
+        18,
+        vec![
+            (0, 1, 0),
+            (0, 5, 0),
+            (1, 2, 1),
+            (1, 3, 2),
+            (3, 4, 3),
+
+            (5, 6, 5),
+            (5, 7, 2),
+            (7, 8, 4),
+
+
+            (9, 10, 0),
+            (9, 14, 0),
+            (10, 11, 1),
+            (10, 12, 2),
+            (12, 13, 4), // Here e (4) instead of d (3)
+
+            (14, 15, 5),
+            (14, 16, 2),
+            (16, 17, 3),
+        ],
+    )
+}
+
+#[pollster::test]
+async fn test_failure_trace() {
+    let lts = failure_trace();
+    let budgets = &lts.winning_budgets(0, 9).await.unwrap()[0];
+    // Equivalences that hold
+    assert!(budgets.test_equivalence(std_equivalences::failures()));
+    assert!(budgets.test_equivalence(std_equivalences::readiness()));
+    assert!(budgets.test_equivalence(std_equivalences::revivals()));
+    assert!(budgets.test_equivalence(std_equivalences::traces()));
+    // Equivalences that don't hold
+    assert!(!budgets.test_equivalence(std_equivalences::failure_traces()));
+    assert!(!budgets.test_equivalence(std_equivalences::readiness_traces()));
+    assert!(!budgets.test_equivalence(std_equivalences::ready_simulation()));
+    assert!(!budgets.test_equivalence(std_equivalences::bisimulation()));
+}
