@@ -1,7 +1,7 @@
 alias Energy = array<u32, $ENERGY_SIZE>;
 
 @group(0) @binding(0)
-var<storage> energies: array<Energy>;
+var<storage, read_write> energies: array<Energy>;
 
 @group(0) @binding(1)
 var<storage> node_offsets: array<NodeOffset>;
@@ -43,6 +43,10 @@ fn less_eq(a: Energy, b: Energy) -> bool {
 
 fn energy_eq(a: Energy, b: Energy) -> bool {
     $IMPL_EQ;
+}
+
+fn unpack_energy(e: Energy) -> array<u32, $ENERGY_ELEMENTS> {
+    return $UNPACK_ENERGY;
 }
 
 // Compute a prefix sum over the minima_buf array.
@@ -114,26 +118,39 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
     // Index of first considered energy
     let nbase = sbase + extra_shift;
     for (var chunk = 0u; chunk < size; chunk += 64u) {
-        // NOTE: We can safely ignore threads with i >= end. They will not
-        // break anything but have to keep running for the prefix sum.
         let i = chunk + l_idx;
         let energy = suprema[nbase + i];
         // Minimize energies
         var filter_out = 0u;
-        let gap = extra_shift + chunk - n_minimized;
-        for (var j = 0u; j < size; j += 1u) {
-            // Jump the gap after already compacted energies
-            j += select(0u, gap, j == n_minimized);
-
-            let e2 = suprema[sbase + j];
-            // Skip reflexive comparisons,
-            // When energies are equal, keep only those with lower index
-            let eq = energy_eq(e2, energy);
-            if j != i && ((eq && i > j) ||
-                          (!eq && less_eq(e2, energy))) {
-                // Mark to be filtered out
-                filter_out = 1u;
-                break;
+        if i < size {
+            // Compare with already minimized energies that have been shifted down to `sbase`
+            for (var j = 0u; j < n_minimized; j += 1u) {
+                let e2 = suprema[sbase + j];
+                // Skip reflexive comparisons,
+                // When energies are equal, keep only those with lower index
+                let eq = energy_eq(e2, energy);
+                if j != i && ((eq && i > j) ||
+                              (!eq && less_eq(e2, energy))) {
+                    // Mark to be filtered out
+                    filter_out = 1u;
+                    break;
+                }
+            }
+            if filter_out == 0u {
+                // If not yet marked for removal, check all following energies,
+                // that have not yet been minimized.
+                for (var j = chunk; j < size; j += 1u) {
+                    let e2 = suprema[nbase + j];
+                    // Skip reflexive comparisons,
+                    // When energies are equal, keep only those with lower index
+                    let eq = energy_eq(e2, energy);
+                    if j != i && ((eq && i > j) ||
+                                  (!eq && less_eq(e2, energy))) {
+                        // Mark to be filtered out
+                        filter_out = 1u;
+                        break;
+                    }
+                }
             }
         }
         minima_buf[l_idx] = filter_out;
@@ -142,15 +159,16 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
         n_minimized += min(size - chunk, 64u) - minima_total;
 
         // Shift energies left to fill any gaps left by non-minimal energies
-        if filter_out == 0u { // Only shift minimal energies
+        if filter_out == 0u && i < size { // Only shift minimal energies
             // Shift by number of filtered elements in this chunk +
             // total previously filtered energies.
             let shift = minima_buf[l_idx] + total_filtered;
             storageBarrier();
-            suprema[sbase + i - shift] = energy;
+            suprema[nbase + i - shift] = energy;
         }
         total_filtered += minima_total;
     }
+    storageBarrier();
     return n_minimized;
 }
 
@@ -177,7 +195,7 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
         successor_offsets[node.successor_offsets_idx];
     if slen > available_mem {
         // Not enough memory, abort.
-        status[wg_id.x] = -slen;
+        status[wg_id.x] = - i32(slen);
         return;
     }
     for (var chunk = 0u; chunk < slen; chunk += 64u) {
@@ -204,36 +222,45 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
         let temp_size = comb_size + slen;
         if temp_size > available_mem {
             // Not enough memory, abort.
-            status[wg_id.x] = -temp_size;
+            status[wg_id.x] = - i32(temp_size);
             return;
         }
+        // Where to write the next chunk of combinations. This depends on the
+        // number of minimal energies left after each chunk of combinations.
+        var n_minimized = 0u;
         // Combine with energies from next successor
         for (var chunk = 0u; chunk < comb_size; chunk += 64u) {
             let i = chunk + l_idx;
             if i < comb_size {
                 let prev_pick = i % slen;
                 let next_pick = i / slen;
-                let e = suprema[sbase + prev_pick];
                 // Previously added energy. This array will get mutated in place
-                var supremum = $UNPACK_ENERGY;
-
+                var supremum = unpack_energy(suprema[sbase + prev_pick]);
                 let e = energies[successor_offsets[suc] + next_pick];
-                let energy = $UNPACK_ENERGY;
+                let energy = unpack_energy(e);
 
                 //supremum[0u] = max(supremum[0u], energy[0u]);
                 //supremum[1u] = max(supremum[1u], energy[1u]);
                 //...
                 $MAX_SUPREMUM
 
-                // Write combinations behind previous energies
-                suprema[sbase + slen + i] = $PACK_SUPREMUM;
+                // Write combinations behind previous minimized energies
+                suprema[sbase + slen + n_minimized + l_idx] = $PACK_SUPREMUM;
+            }
+            // Ensure that all threads have written their supremum.
+            storageBarrier();
+
+            // Minimize each chunk
+            if chunk + 64u >= comb_size {
+                // Last chunk, also shift over previous energies
+                let size = n_minimized + comb_size - chunk;
+                slen = minimize(sbase, slen, size, l_idx);
+            } else {
+                n_minimized = minimize(slen, 0u, n_minimized + 64u, l_idx);
             }
         }
-        // Ensure that all threads have written their supremum.
-        storageBarrier();
-
-        // Minimize
-        slen = minimize(sbase, slen, comb_size, l_idx);
     }
-    status[wg_id.x] = i32(slen);
+    if l_idx == 0u {
+        status[wg_id.x] = i32(slen);
+    }
 }

@@ -9,7 +9,7 @@ use crate::energy::EnergyConf;
 
 
 #[derive(Default)]
-pub struct ShaderPreproc<'r> {
+pub(super) struct ShaderPreproc<'r> {
     replacements: FxHashMap<&'r str, String>
 }
 
@@ -53,7 +53,7 @@ impl<'r> ShaderPreproc<'r> {
 }
 
 fn impl_less_eq(conf: EnergyConf) -> String {
-    let mut out = "return(\n".to_string();
+    let mut out = "return (\n".to_string();
     let mut shift = 0;
     let mut word = 0;
     for i in 0..conf.elements {
@@ -73,7 +73,7 @@ fn impl_less_eq(conf: EnergyConf) -> String {
 }
 
 fn impl_eq(conf: EnergyConf) -> String {
-    let mut out = "return(\n".to_string();
+    let mut out = "return (\n".to_string();
     for i in 0..conf.energy_size() {
         if i > 0 {
             out.push_str(" &&\n");
@@ -156,7 +156,7 @@ fn max_supremum(conf: EnergyConf) -> String {
     out
 }
 
-pub fn make_replacements(conf: EnergyConf) -> ShaderPreproc<'static> {
+pub(super) fn make_replacements(conf: EnergyConf) -> ShaderPreproc<'static> {
     let mut preproc = ShaderPreproc::new();
 
     let elements = conf.elements.to_string();
@@ -188,17 +188,17 @@ pub fn make_replacements(conf: EnergyConf) -> ShaderPreproc<'static> {
     preproc
 }
 
-pub fn build_attack(preproc: &ShaderPreproc) -> ShaderSource<'static> {
+pub(super) fn build_attack(preproc: &ShaderPreproc) -> ShaderSource<'static> {
     let shader_in = include_str!("attack.wgsl");
     ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "attack"))
 }
 
-pub fn build_defend_update(preproc: &ShaderPreproc) -> ShaderSource<'static> {
+pub(super) fn build_defend_update(preproc: &ShaderPreproc) -> ShaderSource<'static> {
     let shader_in = include_str!("defend_update.wgsl");
     ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_update"))
 }
 
-pub fn build_defend_combine(preproc: &ShaderPreproc) -> ShaderSource<'static> {
-    let shader_in = include_str!("defend_combine.wgsl");
-    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_combine"))
+pub(super) fn build_defend_intersection(preproc: &ShaderPreproc) -> ShaderSource<'static> {
+    let shader_in = include_str!("defend_intersection.wgsl");
+    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_intersection"))
 }

@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use std::iter;
 
 use rustc_hash::FxHashSet;
-use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1};
+use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1, ArrayBase, Ix2, Data};
 use serde::{Serialize, Deserialize};
 
 macro_rules! fn_get_conf {
@@ -123,10 +123,10 @@ impl PartialOrd for Energy {
         let mut less = true;
         let mut greater = true;
         for (e0, e1) in iter::zip(self.to_vec(), other.to_vec()) {
-            if e0 < e1 {
-                greater = false;
-            } else if e0 > e1 {
-                less = false;
+            match e0.cmp(&e1) {
+                Ordering::Less => greater = false,
+                Ordering::Greater => less = false,
+                Ordering::Equal => {},
             }
         }
         match (less, greater) {
@@ -328,22 +328,40 @@ impl EnergyArray {
     fn_get_conf!();
 }
 
+impl<S> PartialEq<ArrayBase<S, Ix2>> for EnergyArray
+where
+    S: Data<Elem=u32>
+{
+    fn eq(&self, other: &ArrayBase<S, Ix2>) -> bool {
+        if self.array.shape() != other.shape() {
+            return false;
+        }
+        let set: FxHashSet<ArrayView1<u32>> = self.array.rows().into_iter().collect();
+        for row in other.rows() {
+            if !set.contains(&row) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl<S> PartialEq<EnergyArray> for ArrayBase<S, Ix2>
+where
+    S: Data<Elem=u32>
+{
+    fn eq(&self, other: &EnergyArray) -> bool {
+        other.eq(self)
+    }
+}
+
 impl PartialEq for EnergyArray {
     // Compare two EnergyArrays without regard to ordering
     fn eq(&self, other: &Self) -> bool {
         if self.conf != other.conf {
             return false;
         }
-        if self.array.len() != other.array.len() {
-            return false;
-        }
-        let set: FxHashSet<ArrayView1<u32>> = self.array.rows().into_iter().collect();
-        for row in other.array.rows() {
-            if !set.contains(&row) {
-                return false;
-            }
-        }
-        true
+        self.eq(&other.array)
     }
 }
 
