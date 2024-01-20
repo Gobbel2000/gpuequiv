@@ -14,7 +14,7 @@ use futures_intrusive::channel::shared::{Sender, channel};
 use log::Level::Trace;
 use log::{trace, log_enabled};
 use ndarray::{Array2, ArrayView2, Axis, s};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashSet, FxHashMap};
 use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device};
 use wgpu::util::DeviceExt;
@@ -29,7 +29,7 @@ use shadergen::{ShaderPreproc, make_replacements,
 const WORKGROUP_SIZE: u32 = 64;
 // Initial size of buffers in u32's, if there is no data yet.
 // Buffers with size 0 are not allowed.
-const INITIAL_CAPACITY: usize = 64;
+const INITIAL_CAPACITY: u64 = 64;
 
 #[derive(Serialize, Deserialize)]
 struct SerdeGameGraph {
@@ -272,7 +272,7 @@ trait PlayerShader {
         if energies.is_empty() {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Energies storage buffer empty", Self::name())),
-                size: (INITIAL_CAPACITY * mem::size_of::<u32>()) as u64,
+                size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
@@ -289,7 +289,7 @@ trait PlayerShader {
         if successor_offsets.is_empty() {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Successor offsets storage buffer empty", Self::name())),
-                size: (INITIAL_CAPACITY * mem::size_of::<u32>()) as u64,
+                size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -325,7 +325,7 @@ trait PlayerShader {
 struct DefendShader {
     gpu: Rc<GPUCommon>,
     // Visit list items are (node, mem), where mem is the amount of requested memory for suprema.
-    visit_list: FxHashSet<(u32, usize)>,
+    visit_list: FxHashMap<u32, usize>,
 
     energies: EnergyArray,
     energies_buf: Buffer,
@@ -355,39 +355,36 @@ impl DefendShader {
 
     fn new(
         gpu: Rc<GPUCommon>,
-        game: &EnergyGame,
+        conf: EnergyConf,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
     ) -> Result<DefendShader> {
-        let mut visit_list: FxHashSet<(u32, usize)> = FxHashSet::default();
-        for &v in &game.to_reach {
-            // Start with parent nodes of final points
-            for &w in &game.graph.reverse[v as usize] {
-                if !game.graph.attacker_pos[w as usize] {
-                    visit_list.insert((w, Self::DEFAULT_SUPREMA_MEMORY));
-                }
-            }
-        }
-
-        let (node_offsets, successor_offsets, energies) = Self::collect_data_inner(&visit_list, game)?;
-        let node_offsets_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{} Node offsets storage buffer", Self::name())),
-            contents: bytemuck::cast_slice(&node_offsets),
+        let node_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Node offsets storage buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<NodeOffsetDef>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let energies_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Energies storage buffer initial"),
+            size: INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let successor_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Successor offsets storage buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        let energies_buf = Self::get_energies_buf(&gpu.device, &energies);
-        let successor_offsets_buf = Self::get_successor_offsets_buf(&gpu.device, &successor_offsets);
-
-        let sup_size: u64 = node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
-            .sup_offset.max(INITIAL_CAPACITY as u32).into();
-        let sup_bytes = sup_size * u64::from(game.graph.get_conf().energy_size()) * mem::size_of::<u32>() as u64;
+        let sup_bytes = INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64;
         let (sup_buf, sup_staging_buf) = Self::new_output_buf(
             &gpu.device, sup_bytes, Some("Suprema"));
 
         let (status_buf, status_staging_buf) = Self::new_output_buf(
             &gpu.device,
-            ((node_offsets.len() - 1).max(INITIAL_CAPACITY) * mem::size_of::<i32>()) as u64,
+            INITIAL_CAPACITY * mem::size_of::<i32>() as u64,
             Some("Intersection status"),
         );
 
@@ -475,10 +472,10 @@ impl DefendShader {
 
         Ok(DefendShader {
             gpu,
-            visit_list,
-            energies,
+            visit_list: FxHashMap::default(),
+            energies: EnergyArray::empty(conf),
             energies_buf,
-            node_offsets,
+            node_offsets: Vec::new(),
             node_offsets_buf,
             successor_offsets_buf,
             sup_buf,
@@ -578,18 +575,8 @@ impl DefendShader {
         });
     }
 
-    // Method
-    #[inline]
     fn collect_data(
         &self,
-        game: &EnergyGame,
-    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
-        Self::collect_data_inner(&self.visit_list, game)
-    }
-
-    // Associated function, callable in constructor
-    fn collect_data_inner(
-        visit_list: &FxHashSet<(u32, usize)>,
         game: &EnergyGame,
     ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
@@ -599,7 +586,7 @@ impl DefendShader {
         let mut energies_count = 0;
         let mut sup_count = 0;
 
-        for &(node, mem) in visit_list {
+        for (&node, &mem) in &self.visit_list {
             let snode = node as usize;
 
             // If any successor has no energies associated yet, skip this node
@@ -662,7 +649,7 @@ impl DefendShader {
             cpass.set_bind_group(0, &self.input_bind_group, &[]);
             cpass.set_bind_group(1, &self.suprema_bind_group, &[]);
             // One workgroup for each node
-            cpass.dispatch_workgroups(self.node_offsets.len() as u32 - 1, 1, 1);
+            cpass.dispatch_workgroups(self.node_offsets.len().max(1) as u32 - 1, 1, 1);
         }
         // Copy output to staging buffer
         encoder.copy_buffer_to_buffer(
@@ -684,7 +671,7 @@ impl DefendShader {
         });
     }
 
-    fn process_results(&mut self, atk_visit_list: &mut FxHashSet<u32>, game: &mut EnergyGame) {
+    fn process_results(&mut self, game: &mut EnergyGame) -> Vec<u32> {
         let status_data = self.status_staging_buf.slice(..).get_mapped_range();
         let status: &[i32] = bytemuck::cast_slice(&status_data);
 
@@ -701,11 +688,13 @@ impl DefendShader {
             trace!("Defend Suprema:\n{}", suprema);
         }
 
-        for (node, &status) in self.node_offsets[..self.node_offsets.len() - 1].iter().zip(status) {
+        let mut changed_nodes = Vec::new();
+        let last = self.node_offsets.len().max(1) - 1;
+        for (node, &status) in self.node_offsets[..last].iter().zip(status) {
             if status < 0 {
                 // A negative status means calculation was aborted due to insufficient memory
                 let next_memsize = status.unsigned_abs().next_power_of_two().max(128) as usize;
-                self.visit_list.insert((node.node, next_memsize));
+                self.visit_list.insert(node.node, next_memsize);
                 continue;
             }
             let start = node.sup_offset as usize;
@@ -717,15 +706,7 @@ impl DefendShader {
                 let new_energies = EnergyArray::from_array(new_array.to_owned(), game.graph.get_conf());
                 // Write new energies
                 game.energies[node.node as usize] = new_energies;
-
-                // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse[node.node as usize] {
-                    if game.graph.attacker_pos[pre as usize] {
-                        atk_visit_list.insert(pre);
-                    } else {
-                        self.visit_list.insert((pre, Self::DEFAULT_SUPREMA_MEMORY));
-                    }
-                }
+                changed_nodes.push(node.node);
             }
         }
 
@@ -734,6 +715,7 @@ impl DefendShader {
         self.status_staging_buf.unmap();
         drop(sup_data);
         self.sup_staging_buf.unmap();
+        changed_nodes
     }
 }
 
@@ -762,39 +744,40 @@ impl PlayerShader for AttackShader {
 impl AttackShader {
     fn new(
         gpu: Rc<GPUCommon>,
-        game: &EnergyGame,
+        conf: EnergyConf,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
     ) -> Result<AttackShader> {
-        let mut visit_list: FxHashSet<u32> = FxHashSet::default();
-        for &v in &game.to_reach {
-            // Start with parent nodes of final points
-            for &w in &game.graph.reverse[v as usize] {
-                if game.graph.attacker_pos[w as usize] {
-                    visit_list.insert(w);
-                }
-            }
-        }
-
-        let (node_offsets, successor_offsets, energies) = Self::collect_data_inner(&visit_list, game)?;
-
-        let node_offsets_buf = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{} Node offsets storage buffer", Self::name())),
-            contents: bytemuck::cast_slice(&node_offsets),
+        let node_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Attack Node offsets buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<NodeOffsetAtk>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-
-        let energies_buf = Self::get_energies_buf(&gpu.device, &energies);
+        let energies_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Attack Energies buffer initial"),
+            size: INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
         let energies_staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{} Energies staging buffer", Self::name())),
+            label: Some("Attack Energies staging buffer initial"),
             size: energies_buf.size(),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let successor_offsets_buf = Self::get_successor_offsets_buf(&gpu.device, &successor_offsets);
+        let successor_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Attack Successor offsets buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let (minima_buf, minima_staging_buf) = Self::new_output_buf(
             &gpu.device,
-            Self::minima_size(energies.n_energies()),
+            INITIAL_CAPACITY,
             Some("Minima flags"),
         );
 
@@ -854,11 +837,11 @@ impl AttackShader {
 
         Ok(AttackShader {
             gpu,
-            visit_list,
-            energies,
+            visit_list: FxHashSet::default(),
+            energies: EnergyArray::empty(conf),
             energies_buf,
             energies_staging_buf,
-            node_offsets,
+            node_offsets: Vec::new(),
             node_offsets_buf,
             successor_offsets_buf,
             minima_buf,
@@ -940,18 +923,9 @@ impl AttackShader {
         });
     }
 
-    // Method
-    #[inline]
     fn collect_data(
         &self,
         game: &EnergyGame,
-    ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray)> {
-        Self::collect_data_inner(&self.visit_list, game)
-    }
-
-    fn collect_data_inner(
-        visit_list: &FxHashSet<u32>,
-        game: &EnergyGame
     ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray)> {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
@@ -959,13 +933,13 @@ impl AttackShader {
         let mut node_offsets = Vec::new();
         let mut count = 0;
 
-        for node in visit_list {
+        for &node in &self.visit_list {
             node_offsets.push(NodeOffsetAtk {
-                node: *node,
+                node,
                 offset: count,
                 successor_offsets_idx: successor_offsets_count,
             });
-            for &successor in &game.graph.adj[*node as usize] {
+            for &successor in &game.graph.adj[node as usize] {
                 let successor_energies = &game.energies[successor as usize];
                 energies.append(Axis(0), successor_energies.view()).unwrap();
                 successor_offsets.push(count);
@@ -974,11 +948,11 @@ impl AttackShader {
             }
             // Last "successor" is always the own node in the attack case
             successor_offsets.push(count);
-            let own_energies = &game.energies[*node as usize];
+            let own_energies = &game.energies[node as usize];
             energies.append(Axis(0), own_energies.view()).unwrap();
             // Add number of successors + 1 for own node
             successor_offsets_count = successor_offsets_count.checked_add(
-                game.graph.adj[*node as usize].len() as u32 + 1)
+                game.graph.adj[node as usize].len() as u32 + 1)
                 .ok_or(Error::Overflow)?;
             count = count.checked_add(own_energies.n_energies() as u32).ok_or(Error::Overflow)?;
         }
@@ -1030,7 +1004,7 @@ impl AttackShader {
         });
     }
 
-    fn process_results(&mut self, def_visit_list: &mut FxHashSet<(u32, usize)>, game: &mut EnergyGame) {
+    fn process_results(&mut self, game: &mut EnergyGame) -> Vec<u32> {
         let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
         let minima: &[u64] = bytemuck::cast_slice(&minima_data);
 
@@ -1053,6 +1027,7 @@ impl AttackShader {
 
         const MINIMA_SIZE: u32 = u64::BITS;
 
+        let mut changed_nodes = Vec::new();
         for node_window in self.node_offsets.windows(2) {
             let cur = node_window[0];
             let next_offset = node_window[1].offset;
@@ -1104,15 +1079,7 @@ impl AttackShader {
                 // Write new, filtered energies
                 let new_array = energies.view().select(Axis(0), indices.as_slice());
                 game.energies[cur.node as usize] = EnergyArray::from_array(new_array, game.graph.get_conf());
-
-                // Winning budgets have improved, check predecessors in next iteration
-                for &pre in &game.graph.reverse[cur.node as usize] {
-                    if game.graph.attacker_pos[pre as usize] {
-                        self.visit_list.insert(pre);
-                    } else {
-                        def_visit_list.insert((pre, DefendShader::DEFAULT_SUPREMA_MEMORY));
-                    }
-                }
+                changed_nodes.push(cur.node);
             }
         }
 
@@ -1121,6 +1088,7 @@ impl AttackShader {
         self.minima_staging_buf.unmap();
         drop(energies_data);
         self.energies_staging_buf.unmap();
+        changed_nodes
     }
 }
 
@@ -1138,12 +1106,13 @@ pub struct GPURunner<'a> {
 impl<'a> GPURunner<'a> {
 
     pub async fn with_game(game: &'a mut EnergyGame) -> Result<GPURunner<'a>> {
+        let conf = game.graph.get_conf();
         let gpu_common = Rc::new(GPUCommon::new().await?);
         let (graph_bind_group_layout, graph_bind_group) = game.graph.bind_group(&gpu_common.device);
-        let preprocessor = make_replacements(game.graph.get_conf());
+        let preprocessor = make_replacements(conf);
 
-        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), game, &graph_bind_group_layout, &preprocessor)?;
-        let def_shader = DefendShader::new(Rc::clone(&gpu_common), game, &graph_bind_group_layout, &preprocessor)?;
+        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor)?;
+        let def_shader = DefendShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor)?;
 
         Ok(GPURunner {
             game,
@@ -1155,10 +1124,37 @@ impl<'a> GPURunner<'a> {
         })
     }
 
+    fn initialize_visit_lists(&mut self) {
+        // We need to clone to_reach in order to call changed_nodes with &mut self
+        let to_reach = self.game.to_reach.clone();
+        self.changed_nodes(&to_reach);
+    }
+
+    fn changed_nodes(&mut self, nodes: &[u32]) {
+        for &v in nodes {
+            // Start with parent nodes of final points
+            for &w in &self.game.graph.reverse[v as usize] {
+                if self.game.graph.attacker_pos[w as usize] {
+                    self.atk_shader.visit_list.insert(w);
+                } else {
+                    self.def_shader.visit_list.entry(w)
+                        .or_insert(DefendShader::DEFAULT_SUPREMA_MEMORY);
+                }
+            }
+        }
+    }
+
     pub async fn execute_gpu(&mut self) -> Result<()> {
+        self.initialize_visit_lists();
         loop {
             trace!("Attack visit list: {:?}", self.atk_shader.visit_list);
             trace!("Defend visit list: {:?}", self.def_shader.visit_list);
+
+            let (node_offsets, successor_offsets, energies) = self.atk_shader.collect_data(self.game)?;
+            self.atk_shader.update(node_offsets, successor_offsets, energies);
+            let (node_offsets, successor_offsets, energies) = self.def_shader.collect_data(self.game)?;
+            self.def_shader.update(node_offsets, successor_offsets, energies);
+
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
@@ -1184,19 +1180,16 @@ impl<'a> GPURunner<'a> {
                 receiver.receive().await.expect("Channel should not be closed")?;
             }
 
-            self.atk_shader.process_results(&mut self.def_shader.visit_list, self.game);
-            self.def_shader.process_results(&mut self.atk_shader.visit_list, self.game);
+            let changed = self.atk_shader.process_results(self.game);
+            self.changed_nodes(&changed);
+            let changed = self.def_shader.process_results(self.game);
+            self.changed_nodes(&changed);
 
             if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
                 // Nothing was updated, we are done.
-                //return Ok(&self.game.energies);
-                return Ok(());
+                break;
             }
-
-            let (node_offsets, successor_offsets, energies) = self.atk_shader.collect_data(self.game)?;
-            self.atk_shader.update(node_offsets, successor_offsets, energies);
-            let (node_offsets, successor_offsets, energies) = self.def_shader.collect_data(self.game)?;
-            self.def_shader.update(node_offsets, successor_offsets, energies);
         }
+        Ok(())
     }
 }
