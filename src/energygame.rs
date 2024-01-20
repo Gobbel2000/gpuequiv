@@ -261,10 +261,10 @@ unsafe impl bytemuck::Pod for NodeOffsetDef {}
 trait PlayerShader {
     fn name() -> &'static str;
 
-    // Number of u32's needed to store `n` bitflags.
-    // Rounded up to the next multiple of 2 (64 bits).
-    fn minima_size(n: usize) -> usize {
-        (((n as isize - 1) / 64 + 1) * 2) as usize
+    // Number of bytes needed to store `n` bitflags.
+    // Rounded up to the next multiple of 8 (64 bits).
+    fn minima_size(n: usize) -> u64 {
+        (((n as i64 - 1) / 64 + 1) * 8) as u64
     }
 
     // Construct buffer for energies
@@ -302,26 +302,22 @@ trait PlayerShader {
         }
     }
 
-    // Create minima buffer, with staging buffer for reading.
-    // `size` is the number of u32's to allocate, meaning size*32 flags can be stored.
-    fn get_minima_buf(device: &Device, size: usize) -> (Buffer, Buffer) {
-        // Output flags are bit-packed with 32 bools per u32. Round up to next multiple of 64.
-        // minima_capacity is measured in number of u32's.
-        let minima_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{} Minimal energy flags storage buffer", Self::name())),
-            size: (size * mem::size_of::<u32>()) as u64,
+    fn new_output_buf(device: &Device, size: u64, label: Option<&str>) -> (Buffer, Buffer) {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} {} buffer", Self::name(), label.unwrap_or_default())),
+            size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         // For reading minima_buf on the CPU
-        let minima_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{} Minima output staging buffer", Self::name())),
-            size: minima_buf.size(),
+        let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} {} staging buffer", Self::name(), label.unwrap_or_default())),
+            size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        (minima_buf, minima_staging_buf)
+        (buf, staging_buf)
     }
 }
 
@@ -386,31 +382,14 @@ impl DefendShader {
         let sup_size: u64 = node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
             .sup_offset.max(INITIAL_CAPACITY as u32).into();
         let sup_bytes = sup_size * u64::from(game.graph.get_conf().energy_size()) * mem::size_of::<u32>() as u64;
-        let sup_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend suprema of combinations storage buffer"),
-            size: sup_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let sup_staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend suprema of combinations staging buffer"),
-            size: sup_buf.size(),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let (sup_buf, sup_staging_buf) = Self::new_output_buf(
+            &gpu.device, sup_bytes, Some("Suprema"));
 
-        let status_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend status buffer"),
-            size: ((node_offsets.len() - 1).max(INITIAL_CAPACITY) * mem::size_of::<i32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let status_staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend status staging buffer"),
-            size: status_buf.size(),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let (status_buf, status_staging_buf) = Self::new_output_buf(
+            &gpu.device,
+            ((node_offsets.len() - 1).max(INITIAL_CAPACITY) * mem::size_of::<i32>()) as u64,
+            Some("Intersection status"),
+        );
 
         let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Defend common input bind group layout"),
@@ -554,33 +533,14 @@ impl DefendShader {
             .sup_offset.into();
         let sup_bytes = sup_size * u64::from(self.energies.get_conf().energy_size()) * mem::size_of::<u32>() as u64;
         if sup_bytes > self.sup_buf.size() {
-            self.sup_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Defend suprema of combinations storage buffer"),
-                size: sup_bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
-            self.sup_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Defend suprema of combinations staging buffer"),
-                size: self.sup_buf.size(),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            (self.sup_buf, self.sup_staging_buf) = Self::new_output_buf(
+                device, sup_bytes, Some("Suprema"));
         }
 
-        if ((self.node_offsets.len() - 1) * mem::size_of::<i32>()) as u64 > self.status_buf.size() {
-            self.status_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Defend status buffer"),
-                size: ((self.node_offsets.len() - 1) * mem::size_of::<i32>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
-            self.status_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Defend status staging buffer"),
-                size: self.status_buf.size(),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+        let status_bytes = ((self.node_offsets.len() - 1) * mem::size_of::<i32>()) as u64;
+        if status_bytes > self.status_buf.size() {
+            (self.status_buf, self.status_staging_buf) = Self::new_output_buf(
+                device, status_bytes, Some("Intersection status"));
         }
 
         self.input_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -732,7 +692,8 @@ impl DefendShader {
         let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
         let energy_size = game.graph.get_conf().energy_size() as usize;
         let n_sup = sup_vec.len() / energy_size;
-        let sup_array = ArrayView2::from_shape((n_sup, energy_size), &sup_vec).expect("Suprema array has invalid shape");
+        let sup_array = ArrayView2::from_shape((n_sup, energy_size), &sup_vec)
+            .expect("Suprema array has invalid shape");
 
         if log_enabled!(Trace) {
             trace!("Defend Status values:\n{:?}", status);
@@ -831,8 +792,11 @@ impl AttackShader {
             mapped_at_creation: false,
         });
         let successor_offsets_buf = Self::get_successor_offsets_buf(&gpu.device, &successor_offsets);
-        let (minima_buf, minima_staging_buf) = Self::get_minima_buf(&gpu.device,
-            Self::minima_size(energies.n_energies()));
+        let (minima_buf, minima_staging_buf) = Self::new_output_buf(
+            &gpu.device,
+            Self::minima_size(energies.n_energies()),
+            Some("Minima flags"),
+        );
 
         let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Attack energy bind group layout"),
@@ -947,8 +911,9 @@ impl AttackShader {
         }
 
         let minima_capacity = Self::minima_size(self.energies.n_energies());
-        if minima_capacity * mem::size_of::<u32>() > self.minima_buf.size() as usize {
-            (self.minima_buf, self.minima_staging_buf) = Self::get_minima_buf(device, minima_capacity);
+        if minima_capacity > self.minima_buf.size() {
+            (self.minima_buf, self.minima_staging_buf) = Self::new_output_buf(
+                device, minima_capacity, Some("Minima flags"));
         }
 
         self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
