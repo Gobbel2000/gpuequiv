@@ -1,7 +1,7 @@
 alias Energy = array<u32, $ENERGY_SIZE>;
 
 @group(0) @binding(0)
-var<storage> energies: array<Energy>;
+var<storage, read_write> energies: array<Energy>;
 
 @group(0) @binding(1)
 var<storage> node_offsets: array<NodeOffset>;
@@ -9,11 +9,11 @@ var<storage> node_offsets: array<NodeOffset>;
 @group(0) @binding(2)
 var<storage> successor_offsets: array<u32>;
 
-@group(0) @binding(3)
-var<storage, read_write> minima: array<u32>;
-
 @group(1) @binding(0)
 var<storage, read_write> suprema: array<Energy>;
+
+@group(1) @binding(1)
+var<storage, read_write> minima: array<u32>;
 
 
 struct NodeOffset {
@@ -52,7 +52,7 @@ fn binsearch(i: u32) -> u32 {
 
 @compute
 @workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) g_id:vec3<u32>) {
+fn main(@builtin(global_invocation_id) g_id: vec3<u32>) {
     let i = g_id.x;
     let n_nodes = arrayLength(&node_offsets);
 

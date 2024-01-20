@@ -7,14 +7,14 @@ impl<'a> GPURunner<'a> {
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Test Defend Intersection shader command encoder")
         });
-        self.def_shader.compute_pass(&mut encoder, &self.graph_bind_group);
+        self.defiter_shader.compute_pass(&mut encoder, &self.graph_bind_group);
 
         // Submit command encoder for processing by GPU
         self.gpu.queue.submit(Some(encoder.finish()));
 
         const MAPS: usize = 2;
         let (sender, receiver) = channel(MAPS);
-        self.def_shader.map_buffers(&sender);
+        self.defiter_shader.map_buffers(&sender);
 
         // Wait for the GPU to finish work
         self.gpu.device.poll(wgpu::Maintain::Wait);
@@ -65,7 +65,7 @@ async fn test_defend_intersection_shader() {
     let mut runner = game.get_gpu_runner().await.unwrap();
 
     // Prepare input
-    runner.def_shader.update(
+    runner.defiter_shader.update(
         vec![NodeOffsetDef::zeroed(), NodeOffsetDef {
             node: u32::MAX,
             successor_offsets_idx: 4,
@@ -80,10 +80,10 @@ async fn test_defend_intersection_shader() {
     runner.test_def_shader().await.unwrap();
 
     // Verify output
-    let status_data = runner.def_shader.status_staging_buf.slice(..).get_mapped_range();
+    let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
 
-    let sup_data = runner.def_shader.sup_staging_buf.slice(..).get_mapped_range();
+    let sup_data = runner.defiter_shader.sup_staging_buf.slice(..).get_mapped_range();
     let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
     let energy_size = runner.game.graph.get_conf().energy_size() as usize;
     let n_sup = sup_vec.len() / energy_size;
@@ -105,9 +105,9 @@ async fn test_defend_intersection_shader() {
 
     // Unmap buffers
     drop(status_data);
-    runner.def_shader.status_staging_buf.unmap();
+    runner.defiter_shader.status_staging_buf.unmap();
     drop(sup_data);
-    runner.def_shader.sup_staging_buf.unmap();
+    runner.defiter_shader.sup_staging_buf.unmap();
 }
 
 #[pollster::test]
@@ -132,7 +132,7 @@ async fn test_defend_intersection_shader_large() {
         energies.append(Axis(0), e_once.view()).unwrap();
     }
 
-    runner.def_shader.update(
+    runner.defiter_shader.update(
         node_offsets,
         successor_offsets,
         EnergyArray::from_array(energies, EnergyConf::STANDARD)
@@ -141,16 +141,16 @@ async fn test_defend_intersection_shader_large() {
     runner.test_def_shader().await.unwrap();
 
     // Verify output
-    let status_data = runner.def_shader.status_staging_buf.slice(..).get_mapped_range();
+    let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
 
-    let sup_data = runner.def_shader.sup_staging_buf.slice(..).get_mapped_range();
+    let sup_data = runner.defiter_shader.sup_staging_buf.slice(..).get_mapped_range();
     let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
     let energy_size = runner.game.graph.get_conf().energy_size() as usize;
     let n_sup = sup_vec.len() / energy_size;
     let sup_array = ArrayView2::from_shape((n_sup, energy_size), &sup_vec).expect("Suprema array has invalid shape");
 
-    let node_offsets = &runner.def_shader.node_offsets;
+    let node_offsets = &runner.defiter_shader.node_offsets;
     for (node, &status) in node_offsets[..node_offsets.len() - 1].iter().zip(status) {
         assert_eq!(status, 2);
 
@@ -168,9 +168,9 @@ async fn test_defend_intersection_shader_large() {
 
     // Unmap buffers
     drop(status_data);
-    runner.def_shader.status_staging_buf.unmap();
+    runner.defiter_shader.status_staging_buf.unmap();
     drop(sup_data);
-    runner.def_shader.sup_staging_buf.unmap();
+    runner.defiter_shader.sup_staging_buf.unmap();
 }
 
 fn antichain() -> EnergyArray {
@@ -245,7 +245,7 @@ async fn test_defend_intersection_antichain() {
     array.append(Axis(0), ac2.view()).unwrap();
 
     // Prepare input
-    runner.def_shader.update(
+    runner.defiter_shader.update(
         vec![NodeOffsetDef::zeroed(), NodeOffsetDef {
             node: u32::MAX,
             successor_offsets_idx: 4,
@@ -260,19 +260,18 @@ async fn test_defend_intersection_antichain() {
     runner.test_def_shader().await.unwrap();
 
     // Verify output
-    let status_data = runner.def_shader.status_staging_buf.slice(..).get_mapped_range();
+    let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
     // Should fail due to insufficient memory
     assert_eq!(status[0], - (n_energies as i32));
 
     // Unmap buffers
     drop(status_data);
-    runner.def_shader.status_staging_buf.unmap();
-    runner.def_shader.sup_staging_buf.unmap();
+    runner.defiter_shader.status_staging_buf.unmap();
+    runner.defiter_shader.sup_staging_buf.unmap();
     
-    /*
     // A bit more memory this time: 256 energies
-    runner.def_shader.update(
+    runner.defiter_shader.update(
         vec![NodeOffsetDef::zeroed(), NodeOffsetDef {
             node: u32::MAX,
             successor_offsets_idx: 4,
@@ -280,14 +279,14 @@ async fn test_defend_intersection_antichain() {
             sup_offset: 256,
         }],
         vec![0, n_energies, n_energies * 2, n_energies * 3, n_energies * 4],
-        runner.def_shader.energies.clone(),
+        runner.defiter_shader.energies.clone(),
     );
 
     // Run shader
     runner.test_def_shader().await.unwrap();
 
     // Verify output
-    let status_data = runner.def_shader.status_staging_buf.slice(..).get_mapped_range();
+    let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
     // Still not enough. This time we know that we need 141**2 for the combinations plus 141 for
     // the previous energies.
@@ -295,12 +294,12 @@ async fn test_defend_intersection_antichain() {
 
     // Unmap buffers
     drop(status_data);
-    runner.def_shader.status_staging_buf.unmap();
-    runner.def_shader.sup_staging_buf.unmap();
+    runner.defiter_shader.status_staging_buf.unmap();
+    runner.defiter_shader.sup_staging_buf.unmap();
 
     println!("Now with large array");
     // This should be enough: 2**15 = 32768
-    runner.def_shader.update(
+    runner.defiter_shader.update(
         vec![NodeOffsetDef::zeroed(), NodeOffsetDef {
             node: u32::MAX,
             successor_offsets_idx: 4,
@@ -308,16 +307,16 @@ async fn test_defend_intersection_antichain() {
             sup_offset: 32768,
         }],
         vec![0, n_energies, n_energies * 2, n_energies * 3, n_energies * 4],
-        runner.def_shader.energies.clone(),
+        runner.defiter_shader.energies.clone(),
     );
 
     // Run shader
     runner.test_def_shader().await.unwrap();
 
     // Verify output
-    let status_data = runner.def_shader.status_staging_buf.slice(..).get_mapped_range();
+    let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
-    let sup_data = runner.def_shader.sup_staging_buf.slice(..).get_mapped_range();
+    let sup_data = runner.defiter_shader.sup_staging_buf.slice(..).get_mapped_range();
     let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
     let energy_size = runner.game.graph.get_conf().energy_size() as usize;
     let n_sup = sup_vec.len() / energy_size;
@@ -331,8 +330,7 @@ async fn test_defend_intersection_antichain() {
 
     // Unmap buffers
     drop(status_data);
-    runner.def_shader.status_staging_buf.unmap();
+    runner.defiter_shader.status_staging_buf.unmap();
     drop(sup_data);
-    runner.def_shader.sup_staging_buf.unmap();
-    */
+    runner.defiter_shader.sup_staging_buf.unmap();
 }

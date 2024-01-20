@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use futures_intrusive::channel::shared::{Sender, channel};
 use log::Level::Trace;
-use log::{trace, log_enabled};
+use log::{trace, debug, log_enabled};
 use ndarray::{Array2, ArrayView2, Axis, s};
 use rustc_hash::{FxHashSet, FxHashMap};
 use serde::{Serialize, Deserialize};
@@ -23,7 +23,7 @@ use crate::error::*;
 use crate::energy::*;
 use gpuutils::{GPUCommon, bgl_entry, buffer_fits, GPUGraph};
 use shadergen::{ShaderPreproc, make_replacements,
-    build_attack, build_defend_update, build_defend_intersection};
+    build_attack, build_defend_update, build_defend_direct, build_defend_iterative};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
@@ -321,11 +321,9 @@ trait PlayerShader {
     }
 }
 
-
-struct DefendShader {
+struct DefendDirectShader {
     gpu: Rc<GPUCommon>,
-    // Visit list items are (node, mem), where mem is the amount of requested memory for suprema.
-    visit_list: FxHashMap<u32, usize>,
+    visit_list: FxHashSet<u32>,
 
     energies: EnergyArray,
     energies_buf: Buffer,
@@ -334,8 +332,8 @@ struct DefendShader {
     successor_offsets_buf: Buffer,
     sup_buf: Buffer,
     sup_staging_buf: Buffer,
-    status_buf: Buffer,
-    status_staging_buf: Buffer,
+    minima_buf: Buffer,
+    minima_staging_buf: Buffer,
 
     input_bind_group: wgpu::BindGroup,
     input_bind_group_layout: wgpu::BindGroupLayout,
@@ -344,35 +342,35 @@ struct DefendShader {
     suprema_bind_group: wgpu::BindGroup,
     suprema_bind_group_layout: wgpu::BindGroupLayout,
     combine_pipeline: wgpu::ComputePipeline,
+
+    minima_pipeline: wgpu::ComputePipeline,
 }
 
-impl PlayerShader for DefendShader {
-    fn name() -> &'static str { "Defend" }
+impl PlayerShader for DefendDirectShader {
+    fn name() -> &'static str { "Defend Direct" }
 }
 
-impl DefendShader {
-    const DEFAULT_SUPREMA_MEMORY: usize = 64;
-
+impl DefendDirectShader {
     fn new(
         gpu: Rc<GPUCommon>,
         conf: EnergyConf,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
-    ) -> Result<DefendShader> {
+    ) -> DefendDirectShader {
         let node_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend Node offsets storage buffer initial"),
+            label: Some("Defend Direct Node offsets storage buffer initial"),
             size: INITIAL_CAPACITY * mem::size_of::<NodeOffsetDef>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let energies_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend Energies storage buffer initial"),
+            label: Some("Defend Direct Energies storage buffer initial"),
             size: INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let successor_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Defend Successor offsets storage buffer initial"),
+            label: Some("Defend Direct Successor offsets storage buffer initial"),
             size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -382,14 +380,11 @@ impl DefendShader {
         let (sup_buf, sup_staging_buf) = Self::new_output_buf(
             &gpu.device, sup_bytes, Some("Suprema"));
 
-        let (status_buf, status_staging_buf) = Self::new_output_buf(
-            &gpu.device,
-            INITIAL_CAPACITY * mem::size_of::<i32>() as u64,
-            Some("Intersection status"),
-        );
+        let (minima_buf, minima_staging_buf) = Self::new_output_buf(
+            &gpu.device, INITIAL_CAPACITY, Some("Minima flags"));
 
         let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Defend common input bind group layout"),
+            label: Some("Defend Direct common input bind group layout"),
             entries: &[
                 bgl_entry(0, false), // energies, writable
                 bgl_entry(1, true),  // node offsets
@@ -417,14 +412,431 @@ impl DefendShader {
 
         // A bind group can have at most 4 storage buffers, split across 2 bind groups.
         let suprema_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Defend suprema of combinations shader bind group layout 1"),
+            label: Some("Defend Direct suprema of combinations shader bind group layout 1"),
+            entries: &[
+                bgl_entry(0, false), // suprema, writable
+                bgl_entry(1, false), // minima, writable
+            ],
+        });
+        let suprema_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Defend Direct combinations shader bind group (inital)"),
+            layout: &suprema_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sup_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: minima_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let update_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Defend Direct suprema of combinations pipeline layout"),
+            bind_group_layouts: &[&input_bind_group_layout, &graph_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let update_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Defend Direct energy update shader module"),
+            source: build_defend_update(preprocessor),
+        });
+        let update_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Defend Direct energy update pipeline"),
+            layout: Some(&update_pipeline_layout),
+            module: &update_shader,
+            entry_point: "main",
+        });
+
+        let combine_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Defend Direct suprema of combinations pipeline layout"),
+            bind_group_layouts: &[&input_bind_group_layout, &suprema_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let combine_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Defend Direct suprema of combinations shader module"),
+            source: build_defend_direct(preprocessor),
+        });
+        let combine_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Defend Direct suprema of combinations pipeline"),
+            layout: Some(&combine_pipeline_layout),
+            module: &combine_shader,
+            entry_point: "main",
+        });
+
+        let minima_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Defend Direct minima pipeline"),
+            layout: Some(&combine_pipeline_layout),
+            module: &combine_shader,
+            entry_point: "minimize",
+        });
+
+        DefendDirectShader {
+            gpu,
+            visit_list: FxHashSet::default(),
+            energies: EnergyArray::empty(conf),
+            energies_buf,
+            node_offsets: Vec::new(),
+            node_offsets_buf,
+            successor_offsets_buf,
+            sup_buf,
+            sup_staging_buf,
+            minima_buf,
+            minima_staging_buf,
+
+            input_bind_group,
+            input_bind_group_layout,
+            update_pipeline,
+
+            suprema_bind_group,
+            suprema_bind_group_layout,
+            combine_pipeline,
+
+            minima_pipeline,
+        }
+    }
+
+    fn update(&mut self,
+        node_offsets: Vec<NodeOffsetDef>,
+        successor_offsets: Vec<u32>,
+        energies: EnergyArray,
+    ) {
+        let device = &self.gpu.device;
+        let queue = &self.gpu.queue;
+
+        if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
+            self.energies_buf = Self::get_energies_buf(device, &energies);
+        } else {
+            queue.write_buffer(&self.energies_buf, 0, energies.data());
+        }
+        self.energies = energies;
+
+        // Make sure the node offsets buffer always has exactly the right size
+        if node_offsets.len() * std::mem::size_of::<NodeOffsetDef>() != self.node_offsets_buf.size() as usize {
+            self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Defend Direct node offsets storage buffer"),
+                contents: bytemuck::cast_slice(&node_offsets),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        } else {
+            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&node_offsets));
+        }
+        self.node_offsets = node_offsets;
+
+        if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
+            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
+        } else {
+            queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
+        }
+
+        let sup_size: u64 = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
+            .sup_offset.into();
+        let sup_bytes = sup_size * u64::from(self.energies.get_conf().energy_size()) * std::mem::size_of::<u32>() as u64;
+        if sup_bytes > self.sup_buf.size() {
+            (self.sup_buf, self.sup_staging_buf) = Self::new_output_buf(
+                device, sup_bytes, Some("Suprema"));
+        }
+
+        let minima_capacity = Self::minima_size(sup_size as usize);
+        if minima_capacity > self.minima_buf.size() {
+            (self.minima_buf, self.minima_staging_buf) = Self::new_output_buf(
+                device, minima_capacity, Some("Minima flags"));
+        }
+
+        self.input_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Defend Direct common input bind group (updated)"),
+            layout: &self.input_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.energies_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.node_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.successor_offsets_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.suprema_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Defend Direct suprema of combinations bind group (updated)"),
+            layout: &self.suprema_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.sup_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.minima_buf.as_entire_binding(),
+                },
+            ],
+        });
+    }
+
+    fn collect_data(
+        &self,
+        game: &EnergyGame
+    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
+        let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
+        let mut successor_offsets = Vec::new();
+        let mut successor_offsets_count = 0;
+        let mut node_offsets = Vec::new();
+        let mut energies_count = 0;
+        let mut sup_count = 0;
+
+        for &node in &self.visit_list {
+            let snode = node as usize;
+
+            // If any successor has no energies associated yet, skip this node
+            if game.graph.adj[snode].iter()
+                .any(|&suc| game.energies[suc as usize].is_empty())
+            { continue }
+
+            node_offsets.push(NodeOffsetDef {
+                node,
+                successor_offsets_idx: successor_offsets_count,
+                energy_offset: energies_count,
+                sup_offset: sup_count,
+            });
+            let mut cur_sup_count: u32 = 1;
+            for &successor in &game.graph.adj[snode] {
+                let successor_energies = &game.energies[successor as usize];
+                energies.append(Axis(0), successor_energies.view()).unwrap();
+                successor_offsets.push(energies_count);
+                energies_count = energies_count.checked_add(successor_energies.n_energies() as u32)
+                    .ok_or(Error::Overflow)?;
+                cur_sup_count = cur_sup_count.checked_mul(successor_energies.n_energies() as u32)
+                    .ok_or(Error::Overflow)?;
+            }
+            successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32)
+                .ok_or(Error::Overflow)?;
+            sup_count = sup_count.checked_add(cur_sup_count).ok_or(Error::Overflow)?;
+        }
+        successor_offsets.push(energies_count);
+        // Last offset does not correspond to another starting node, mark with u32::MAX
+        node_offsets.push(NodeOffsetDef {
+            node: u32::MAX,
+            successor_offsets_idx: successor_offsets_count,
+            energy_offset: energies_count,
+            sup_offset: sup_count,
+        });
+        let earray = EnergyArray::from_array(energies, game.graph.get_conf());
+        trace!("Defend Direct data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
+
+        Ok((node_offsets, successor_offsets, earray))
+    }
+
+    fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
+        { // Compute pass for updating energies
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Defend Direct energy update compute pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.update_pipeline);
+            cpass.set_bind_group(0, &self.input_bind_group, &[]);
+            cpass.set_bind_group(1, graph_bind_group, &[]);
+
+            let n_energies = self.energies.view().nrows() as u32;
+            let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
+            cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
+        }
+        let n_sup = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
+            .sup_offset;
+        let workgroup_count = n_sup.div_ceil(WORKGROUP_SIZE);
+        { // Compute pass for taking suprema of combinations
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Defend Direct suprema of combinations compute pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.combine_pipeline);
+            cpass.set_bind_group(0, &self.input_bind_group, &[]);
+            cpass.set_bind_group(1, &self.suprema_bind_group, &[]);
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+
+            cpass.set_pipeline(&self.minima_pipeline);
+            cpass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+        // Copy output to staging buffer
+        encoder.copy_buffer_to_buffer(
+            &self.minima_buf, 0, &self.minima_staging_buf, 0, self.minima_buf.size());
+        encoder.copy_buffer_to_buffer(
+            &self.sup_buf, 0, &self.sup_staging_buf, 0, self.sup_buf.size());
+    }
+
+    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) {
+        let minima_buffer_slice = self.minima_staging_buf.slice(..);
+        let sup_buffer_slice = self.sup_staging_buf.slice(..);
+        let sender0 = sender.clone();
+        minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender0.try_send(v).expect("Channel should be writable");
+        });
+        let sender1 = sender.clone();
+        sup_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender1.try_send(v).expect("Channel should be writable");
+        });
+    }
+
+    fn process_results(&mut self, game: &mut EnergyGame) -> Vec<u32> {
+        let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
+        let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+
+        let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
+        let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
+        let energy_size = game.graph.get_conf().energy_size() as usize;
+        let n_sup = sup_vec.len() / energy_size;
+        let sup_array = Array2::from_shape_vec((n_sup, energy_size), sup_vec).expect("Suprema array has invalid shape");
+        let suprema = EnergyArray::from_array(sup_array, game.graph.get_conf());
+
+        if log_enabled!(Trace) {
+            let mut msg = "Defend Direct Minima:   ".to_string();
+            for minima_chunk in minima {
+                msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
+            }
+            trace!("{}", msg);
+            trace!("Defend Direct Suprema:\n{}", suprema);
+        }
+
+        const MINIMA_SIZE: usize = u64::BITS as usize;
+
+        let mut changed_nodes = Vec::new();
+        for node_window in self.node_offsets.windows(2) {
+            let cur = node_window[0];
+            let next_offset = node_window[1].sup_offset;
+            let prev = &game.energies[cur.node as usize];
+
+            let indices: Vec<usize> = (cur.sup_offset as usize..next_offset as usize)
+                .filter(|i| minima[i / MINIMA_SIZE] & (1 << (i % MINIMA_SIZE)) != 0)
+                .collect();
+
+            let new_array = suprema.view().select(Axis(0), indices.as_slice());
+            let new_energies = EnergyArray::from_array(new_array, game.graph.get_conf());
+
+            if &new_energies != prev {
+                // Write new, filtered energies
+                game.energies[cur.node as usize] = new_energies;
+                changed_nodes.push(cur.node);
+            }
+        }
+
+        // Unmap buffers
+        drop(minima_data);
+        self.minima_staging_buf.unmap();
+        drop(sup_data);
+        self.sup_staging_buf.unmap();
+        changed_nodes
+    }
+}
+
+
+struct DefendIterShader {
+    gpu: Rc<GPUCommon>,
+    // Visit list items are (node, mem), where mem is the amount of requested memory for suprema.
+    visit_list: FxHashMap<u32, usize>,
+
+    energies: EnergyArray,
+    energies_buf: Buffer,
+    node_offsets: Vec<NodeOffsetDef>,
+    node_offsets_buf: Buffer,
+    successor_offsets_buf: Buffer,
+    sup_buf: Buffer,
+    sup_staging_buf: Buffer,
+    status_buf: Buffer,
+    status_staging_buf: Buffer,
+
+    input_bind_group: wgpu::BindGroup,
+    input_bind_group_layout: wgpu::BindGroupLayout,
+    update_pipeline: wgpu::ComputePipeline,
+
+    suprema_bind_group: wgpu::BindGroup,
+    suprema_bind_group_layout: wgpu::BindGroupLayout,
+    combine_pipeline: wgpu::ComputePipeline,
+}
+
+impl PlayerShader for DefendIterShader {
+    fn name() -> &'static str { "Defend Iterative" }
+}
+
+impl DefendIterShader {
+    const DEFAULT_SUPREMA_MEMORY: usize = 64;
+
+    fn new(
+        gpu: Rc<GPUCommon>,
+        conf: EnergyConf,
+        graph_bind_group_layout: &wgpu::BindGroupLayout,
+        preprocessor: &ShaderPreproc,
+    ) -> DefendIterShader {
+        let node_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Iterative Node offsets storage buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<NodeOffsetDef>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let energies_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Iterative Energies storage buffer initial"),
+            size: INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let successor_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Iterative Successor offsets storage buffer initial"),
+            size: INITIAL_CAPACITY * mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let sup_bytes = INITIAL_CAPACITY * u64::from(conf.energy_size()) * mem::size_of::<u32>() as u64;
+        let (sup_buf, sup_staging_buf) = Self::new_output_buf(
+            &gpu.device, sup_bytes, Some("Suprema"));
+
+        let (status_buf, status_staging_buf) = Self::new_output_buf(
+            &gpu.device,
+            INITIAL_CAPACITY * mem::size_of::<i32>() as u64,
+            Some("Intersection status"),
+        );
+
+        let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Defend Iterative common input bind group layout"),
+            entries: &[
+                bgl_entry(0, false), // energies, writable
+                bgl_entry(1, true),  // node offsets
+                bgl_entry(2, true),  // successor offsets
+            ],
+        });
+        let input_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("{} common input bind group (initial)", Self::name())),
+            layout: &input_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: energies_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: node_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: successor_offsets_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        // A bind group can have at most 4 storage buffers, split across 2 bind groups.
+        let suprema_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Defend Iterative suprema of combinations shader bind group layout 1"),
             entries: &[
                 bgl_entry(0, false), // suprema, writable
                 bgl_entry(1, false), // status, writable
             ],
         });
         let suprema_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Defend combinations shader bind group (inital)"),
+            label: Some("Defend Iterative combinations shader bind group (inital)"),
             layout: &suprema_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -439,38 +851,38 @@ impl DefendShader {
         });
 
         let update_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Defend suprema of combinations pipeline layout"),
+            label: Some("Defend Iterative suprema of combinations pipeline layout"),
             bind_group_layouts: &[&input_bind_group_layout, &graph_bind_group_layout],
             push_constant_ranges: &[],
         });
         let update_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Defend energy update shader module"),
+            label: Some("Defend Iterative energy update shader module"),
             source: build_defend_update(preprocessor),
         });
         let update_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Defend energy update pipeline"),
+            label: Some("Defend Iterative energy update pipeline"),
             layout: Some(&update_pipeline_layout),
             module: &update_shader,
             entry_point: "main",
         });
 
         let combine_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Defend suprema of combinations pipeline layout"),
+            label: Some("Defend Iterative suprema of combinations pipeline layout"),
             bind_group_layouts: &[&input_bind_group_layout, &suprema_bind_group_layout],
             push_constant_ranges: &[],
         });
         let combine_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Defend suprema of combinations shader module"),
-            source: build_defend_intersection(preprocessor),
+            label: Some("Defend Iterative suprema of combinations shader module"),
+            source: build_defend_iterative(preprocessor),
         });
         let combine_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Defend suprema of combinations pipeline"),
+            label: Some("Defend Iterative suprema of combinations pipeline"),
             layout: Some(&combine_pipeline_layout),
             module: &combine_shader,
             entry_point: "intersection",
         });
 
-        Ok(DefendShader {
+        DefendIterShader {
             gpu,
             visit_list: FxHashMap::default(),
             energies: EnergyArray::empty(conf),
@@ -490,7 +902,7 @@ impl DefendShader {
             suprema_bind_group,
             suprema_bind_group_layout,
             combine_pipeline,
-        })
+        }
     }
 
     fn update(&mut self,
@@ -511,7 +923,7 @@ impl DefendShader {
         // Make sure the node offsets buffer always has exactly the right size
         if node_offsets.len() * mem::size_of::<NodeOffsetDef>() != self.node_offsets_buf.size() as usize {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Defend node offsets storage buffer"),
+                label: Some("Defend Iterative node offsets storage buffer"),
                 contents: bytemuck::cast_slice(&node_offsets),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
@@ -541,7 +953,7 @@ impl DefendShader {
         }
 
         self.input_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Defend common input bind group (updated)"),
+            label: Some("Defend Iterative common input bind group (updated)"),
             layout: &self.input_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -560,7 +972,7 @@ impl DefendShader {
         });
 
         self.suprema_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Defend combinations shader bind group (updated)"),
+            label: Some("Defend Iterative combinations shader bind group (updated)"),
             layout: &self.suprema_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -621,7 +1033,7 @@ impl DefendShader {
             sup_offset: sup_count,
         });
         let earray = EnergyArray::from_array(energies, game.graph.get_conf());
-        trace!("Defend data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
+        trace!("Defend Iterative data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
 
         Ok((node_offsets, successor_offsets, earray))
     }
@@ -629,7 +1041,7 @@ impl DefendShader {
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
         { // Compute pass for updating energies
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend energy update compute pass"),
+                label: Some("Defend Iterative energy update compute pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(&self.update_pipeline);
@@ -642,7 +1054,7 @@ impl DefendShader {
         }
         { // Compute pass for taking suprema of combinations
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend suprema of combinations compute pass"),
+                label: Some("Defend Iterative suprema of combinations compute pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(&self.combine_pipeline);
@@ -683,9 +1095,9 @@ impl DefendShader {
             .expect("Suprema array has invalid shape");
 
         if log_enabled!(Trace) {
-            trace!("Defend Status values:\n{:?}", status);
+            trace!("Defend Iterative Status values:\n{:?}", status);
             let suprema = EnergyArray::from_array(sup_array.to_owned(), game.graph.get_conf());
-            trace!("Defend Suprema:\n{}", suprema);
+            trace!("Defend Iterative Suprema:\n{}", suprema);
         }
 
         let mut changed_nodes = Vec::new();
@@ -747,7 +1159,7 @@ impl AttackShader {
         conf: EnergyConf,
         graph_bind_group_layout: &wgpu::BindGroupLayout,
         preprocessor: &ShaderPreproc,
-    ) -> Result<AttackShader> {
+    ) -> AttackShader {
         let node_offsets_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Attack Node offsets buffer initial"),
             size: INITIAL_CAPACITY * mem::size_of::<NodeOffsetAtk>() as u64,
@@ -776,10 +1188,7 @@ impl AttackShader {
         });
 
         let (minima_buf, minima_staging_buf) = Self::new_output_buf(
-            &gpu.device,
-            INITIAL_CAPACITY,
-            Some("Minima flags"),
-        );
+            &gpu.device, INITIAL_CAPACITY, Some("Minima flags"));
 
         let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Attack energy bind group layout"),
@@ -835,7 +1244,7 @@ impl AttackShader {
             entry_point: "minimize",
         });
 
-        Ok(AttackShader {
+        AttackShader {
             gpu,
             visit_list: FxHashSet::default(),
             energies: EnergyArray::empty(conf),
@@ -851,7 +1260,7 @@ impl AttackShader {
             bind_group_layout,
             pipeline,
             minima_pipeline,
-        })
+        }
     }
 
     fn update(&mut self,
@@ -1100,7 +1509,8 @@ pub struct GPURunner<'a> {
     graph_bind_group: wgpu::BindGroup,
 
     atk_shader: AttackShader,
-    def_shader: DefendShader,
+    defdir_shader: DefendDirectShader,
+    defiter_shader: DefendIterShader,
 }
 
 impl<'a> GPURunner<'a> {
@@ -1111,8 +1521,9 @@ impl<'a> GPURunner<'a> {
         let (graph_bind_group_layout, graph_bind_group) = game.graph.bind_group(&gpu_common.device);
         let preprocessor = make_replacements(conf);
 
-        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor)?;
-        let def_shader = DefendShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor)?;
+        let atk_shader = AttackShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor);
+        let defdir_shader = DefendDirectShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor);
+        let defiter_shader = DefendIterShader::new(Rc::clone(&gpu_common), conf, &graph_bind_group_layout, &preprocessor);
 
         Ok(GPURunner {
             game,
@@ -1120,7 +1531,8 @@ impl<'a> GPURunner<'a> {
             graph_bind_group,
 
             atk_shader,
-            def_shader,
+            defdir_shader,
+            defiter_shader,
         })
     }
 
@@ -1137,8 +1549,16 @@ impl<'a> GPURunner<'a> {
                 if self.game.graph.attacker_pos[w as usize] {
                     self.atk_shader.visit_list.insert(w);
                 } else {
-                    self.def_shader.visit_list.entry(w)
-                        .or_insert(DefendShader::DEFAULT_SUPREMA_MEMORY);
+                    let combinations: u32 = self.game.graph.adj[w as usize].iter()
+                        .map(|&suc| self.game.energies[suc as usize].n_energies() as u32)
+                        .reduce(|acc, e| acc.saturating_mul(e))
+                        .unwrap_or_default();
+                    if combinations <= 64 {
+                        self.defdir_shader.visit_list.insert(w);
+                    } else {
+                        self.defiter_shader.visit_list.entry(w)
+                            .or_insert(DefendIterShader::DEFAULT_SUPREMA_MEMORY);
+                    }
                 }
             }
         }
@@ -1147,31 +1567,37 @@ impl<'a> GPURunner<'a> {
     pub async fn execute_gpu(&mut self) -> Result<()> {
         self.initialize_visit_lists();
         loop {
-            trace!("Attack visit list: {:?}", self.atk_shader.visit_list);
-            trace!("Defend visit list: {:?}", self.def_shader.visit_list);
+            debug!("Attack visit list: {:?}", self.atk_shader.visit_list);
+            debug!("Defend Direct visit list: {:?}", self.defdir_shader.visit_list);
+            debug!("Defend Iterative visit list: {:?}", self.defiter_shader.visit_list);
 
             let (node_offsets, successor_offsets, energies) = self.atk_shader.collect_data(self.game)?;
             self.atk_shader.update(node_offsets, successor_offsets, energies);
-            let (node_offsets, successor_offsets, energies) = self.def_shader.collect_data(self.game)?;
-            self.def_shader.update(node_offsets, successor_offsets, energies);
+            let (node_offsets, successor_offsets, energies) = self.defdir_shader.collect_data(self.game)?;
+            self.defdir_shader.update(node_offsets, successor_offsets, energies);
+            let (node_offsets, successor_offsets, energies) = self.defiter_shader.collect_data(self.game)?;
+            self.defiter_shader.update(node_offsets, successor_offsets, energies);
 
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
             });
             self.atk_shader.compute_pass(&mut encoder, &self.graph_bind_group);
-            self.def_shader.compute_pass(&mut encoder, &self.graph_bind_group);
+            self.defdir_shader.compute_pass(&mut encoder, &self.graph_bind_group);
+            self.defiter_shader.compute_pass(&mut encoder, &self.graph_bind_group);
 
             // Submit command encoder for processing by GPU
             self.gpu.queue.submit(Some(encoder.finish()));
 
-            const MAPS: usize = 4;
+            const MAPS: usize = 6;
             let (sender, receiver) = channel(MAPS);
             self.atk_shader.map_buffers(&sender);
-            self.def_shader.map_buffers(&sender);
+            self.defdir_shader.map_buffers(&sender);
+            self.defiter_shader.map_buffers(&sender);
 
             // Reset visit lists
-            self.def_shader.visit_list.clear();
             self.atk_shader.visit_list.clear();
+            self.defdir_shader.visit_list.clear();
+            self.defiter_shader.visit_list.clear();
 
             // Wait for the GPU to finish work
             self.gpu.device.poll(wgpu::Maintain::Wait);
@@ -1182,10 +1608,15 @@ impl<'a> GPURunner<'a> {
 
             let changed = self.atk_shader.process_results(self.game);
             self.changed_nodes(&changed);
-            let changed = self.def_shader.process_results(self.game);
+            let changed = self.defdir_shader.process_results(self.game);
+            self.changed_nodes(&changed);
+            let changed = self.defiter_shader.process_results(self.game);
             self.changed_nodes(&changed);
 
-            if self.def_shader.visit_list.is_empty() && self.atk_shader.visit_list.is_empty() {
+            if  self.atk_shader.visit_list.is_empty() &&
+                self.defdir_shader.visit_list.is_empty() &&
+                self.defiter_shader.visit_list.is_empty()
+            {
                 // Nothing was updated, we are done.
                 break;
             }
