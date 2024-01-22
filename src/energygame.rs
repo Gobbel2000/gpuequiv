@@ -580,17 +580,19 @@ impl DefendDirectShader {
     }
 
     fn collect_data(
-        &self,
+        &mut self,
         game: &EnergyGame
-    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
+    ) -> (Vec<NodeOffsetDef>, Vec<u32>, EnergyArray) {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
-        let mut successor_offsets_count = 0;
         let mut node_offsets = Vec::new();
-        let mut energies_count = 0;
         let mut sup_count = 0;
 
+        let max_size = self.gpu.device.limits().max_storage_buffer_binding_size as usize - 256;
+        let max_wg = self.gpu.device.limits().max_compute_workgroups_per_dimension;
+        let mut visiting = FxHashSet::default();
         for &node in &self.visit_list {
+            visiting.insert(node);
             let snode = node as usize;
 
             // If any successor has no energies associated yet, skip this node
@@ -600,36 +602,63 @@ impl DefendDirectShader {
 
             node_offsets.push(NodeOffsetDef {
                 node,
-                successor_offsets_idx: successor_offsets_count,
-                energy_offset: energies_count,
+                successor_offsets_idx: successor_offsets.len() as u32,
+                energy_offset: energies.nrows() as u32,
                 sup_offset: sup_count,
             });
             let mut cur_sup_count: u32 = 1;
             for &successor in &game.graph.adj[snode] {
+                successor_offsets.push(energies.nrows() as u32);
                 let successor_energies = &game.energies[successor as usize];
                 energies.append(Axis(0), successor_energies.view()).unwrap();
-                successor_offsets.push(energies_count);
-                energies_count = energies_count.checked_add(successor_energies.n_energies() as u32)
-                    .ok_or(Error::Overflow)?;
-                cur_sup_count = cur_sup_count.checked_mul(successor_energies.n_energies() as u32)
-                    .ok_or(Error::Overflow)?;
+                cur_sup_count = cur_sup_count.saturating_mul(successor_energies.n_energies() as u32);
             }
-            successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32)
-                .ok_or(Error::Overflow)?;
-            sup_count = sup_count.checked_add(cur_sup_count).ok_or(Error::Overflow)?;
+            sup_count = sup_count.saturating_add(cur_sup_count);
+
+            // Check limits
+            let node_offsets_size = mem::size_of_val(&node_offsets);
+            let successor_offsets_size = mem::size_of_val(&successor_offsets);
+            let energies_size = energies.len() * mem::size_of::<u32>();
+            let upd_wg_count = (energies.nrows() as u32).div_ceil(WORKGROUP_SIZE);
+            let sup_wg_count = sup_count.div_ceil(WORKGROUP_SIZE);
+            let sup_size = (sup_count * game.graph.get_conf().energy_size()) as usize * mem::size_of::<u32>();
+            if upd_wg_count > max_wg || // Update workgroups
+                sup_wg_count > max_wg || // Suprema workgroups
+                sup_size > max_size ||
+                energies_size > max_size ||
+                node_offsets_size > max_size ||
+                successor_offsets_size > max_size
+            {
+                // This node doesn't fit, mark last node offset as final cap
+                node_offsets.last_mut().unwrap().node = u32::MAX;
+                visiting.remove(&node);
+                break;
+            }
         }
-        successor_offsets.push(energies_count);
-        // Last offset does not correspond to another starting node, mark with u32::MAX
-        node_offsets.push(NodeOffsetDef {
-            node: u32::MAX,
-            successor_offsets_idx: successor_offsets_count,
-            energy_offset: energies_count,
-            sup_offset: sup_count,
-        });
+
+        self.visit_list = &self.visit_list - &visiting;
+
+        if self.visit_list.is_empty() {
+            // Last offset does not correspond to another starting node, mark with u32::MAX
+            node_offsets.push(NodeOffsetDef {
+                node: u32::MAX,
+                successor_offsets_idx: successor_offsets.len() as u32,
+                energy_offset: energies.nrows() as u32,
+                sup_offset: sup_count,
+            });
+            successor_offsets.push(energies.nrows() as u32);
+        }
+
         let earray = EnergyArray::from_array(energies, game.graph.get_conf());
         trace!("Defend Direct data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
 
-        Ok((node_offsets, successor_offsets, earray))
+        (node_offsets, successor_offsets, earray)
+    }
+
+    #[inline]
+    fn prepare_run(&mut self, game: &EnergyGame) {
+        let data = self.collect_data(game);
+        self.update(data.0, data.1, data.2);
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -737,7 +766,7 @@ impl DefendDirectShader {
 struct DefendIterShader {
     gpu: Rc<GPUCommon>,
     // Visit list items are (node, mem), where mem is the amount of requested memory for suprema.
-    visit_list: FxHashMap<u32, usize>,
+    visit_list: FxHashMap<u32, u32>,
 
     energies: EnergyArray,
     energies_buf: Buffer,
@@ -763,7 +792,7 @@ impl PlayerShader for DefendIterShader {
 }
 
 impl DefendIterShader {
-    const DEFAULT_SUPREMA_MEMORY: usize = 64;
+    const DEFAULT_SUPREMA_MEMORY: u32 = 64;
 
     fn new(
         gpu: Rc<GPUCommon>,
@@ -988,17 +1017,19 @@ impl DefendIterShader {
     }
 
     fn collect_data(
-        &self,
+        &mut self,
         game: &EnergyGame,
-    ) -> Result<(Vec<NodeOffsetDef>, Vec<u32>, EnergyArray)> {
+    ) -> (Vec<NodeOffsetDef>, Vec<u32>, EnergyArray) {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
-        let mut successor_offsets_count = 0;
         let mut node_offsets = Vec::new();
-        let mut energies_count = 0;
         let mut sup_count = 0;
 
-        for (&node, &mem) in &self.visit_list {
+        let max_size = self.gpu.device.limits().max_storage_buffer_binding_size as usize - 256;
+        let max_wg = self.gpu.device.limits().max_compute_workgroups_per_dimension;
+        let visit_list: Vec<(u32, u32)> = self.visit_list.iter().map(|(&k, &v)| (k, v)).collect();
+        for (node, mem) in visit_list {
+            self.visit_list.remove(&node);
             let snode = node as usize;
 
             // If any successor has no energies associated yet, skip this node
@@ -1008,34 +1039,57 @@ impl DefendIterShader {
 
             node_offsets.push(NodeOffsetDef {
                 node,
-                successor_offsets_idx: successor_offsets_count,
-                energy_offset: energies_count,
+                successor_offsets_idx: successor_offsets.len() as u32,
+                energy_offset: energies.nrows() as u32,
                 sup_offset: sup_count,
             });
             for &successor in &game.graph.adj[snode] {
-                let successor_energies = &game.energies[successor as usize];
-                energies.append(Axis(0), successor_energies.view()).unwrap();
-                successor_offsets.push(energies_count);
-                energies_count = energies_count.checked_add(successor_energies.n_energies() as u32)
-                    .ok_or(Error::Overflow)?;
+                successor_offsets.push(energies.nrows() as u32);
+                energies.append(Axis(0), game.energies[successor as usize].view()).unwrap();
             }
-            successor_offsets_count = successor_offsets_count.checked_add(game.graph.adj[snode].len() as u32)
-                .ok_or(Error::Overflow)?;
             // Allocate the requested amount of suprema memory for this node
-            sup_count = sup_count.checked_add(mem as u32).ok_or(Error::Overflow)?;
+            sup_count = sup_count.saturating_add(mem as u32);
+
+            // Check limits
+            let node_offsets_size = mem::size_of_val(&node_offsets);
+            let successor_offsets_size = mem::size_of_val(&successor_offsets);
+            let energies_size = energies.len() * mem::size_of::<u32>();
+            let workgroup_count = (energies.nrows() as u32).div_ceil(WORKGROUP_SIZE);
+            let sup_size = (sup_count * game.graph.get_conf().energy_size()) as usize * mem::size_of::<u32>();
+            if workgroup_count > max_wg || // Update workgroups
+                node_offsets.len() as u32 > max_wg || // Minimize workgroups
+                sup_size > max_size ||
+                energies_size > max_size ||
+                node_offsets_size > max_size ||
+                successor_offsets_size > max_size
+            {
+                self.visit_list.insert(node, mem);
+                // This node doesn't fit, mark last node offset as final cap
+                node_offsets.last_mut().unwrap().node = u32::MAX;
+                break;
+            }
         }
-        successor_offsets.push(energies_count);
-        // Last offset does not correspond to another starting node, mark with u32::MAX
-        node_offsets.push(NodeOffsetDef {
-            node: u32::MAX,
-            successor_offsets_idx: successor_offsets_count,
-            energy_offset: energies_count,
-            sup_offset: sup_count,
-        });
+
+        if self.visit_list.is_empty() {
+            node_offsets.push(NodeOffsetDef {
+                // Last offset does not correspond to another starting node, mark with u32::MAX
+                node: u32::MAX,
+                successor_offsets_idx: successor_offsets.len() as u32,
+                energy_offset: energies.nrows() as u32,
+                sup_offset: sup_count,
+            });
+            successor_offsets.push(energies.nrows() as u32);
+        }
         let earray = EnergyArray::from_array(energies, game.graph.get_conf());
         trace!("Defend Iterative data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
 
-        Ok((node_offsets, successor_offsets, earray))
+        (node_offsets, successor_offsets, earray)
+    }
+
+    #[inline]
+    fn prepare_run(&mut self, game: &EnergyGame) {
+        let data = self.collect_data(game);
+        self.update(data.0, data.1, data.2);
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -1105,7 +1159,7 @@ impl DefendIterShader {
         for (node, &status) in self.node_offsets[..last].iter().zip(status) {
             if status < 0 {
                 // A negative status means calculation was aborted due to insufficient memory
-                let next_memsize = status.unsigned_abs().next_power_of_two().max(128) as usize;
+                let next_memsize = status.unsigned_abs().next_power_of_two().max(128);
                 self.visit_list.insert(node.node, next_memsize);
                 continue;
             }
@@ -1333,48 +1387,67 @@ impl AttackShader {
     }
 
     fn collect_data(
-        &self,
+        &mut self,
         game: &EnergyGame,
-    ) -> Result<(Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray)> {
+    ) -> (Vec<NodeOffsetAtk>, Vec<u32>, EnergyArray) {
         let mut energies = Array2::zeros((0, game.graph.get_conf().energy_size() as usize));
         let mut successor_offsets = Vec::new();
-        let mut successor_offsets_count = 0;
         let mut node_offsets = Vec::new();
-        let mut count = 0;
 
+        let mut visiting = FxHashSet::default();
+        let max_size = self.gpu.device.limits().max_storage_buffer_binding_size as usize;
         for &node in &self.visit_list {
             node_offsets.push(NodeOffsetAtk {
                 node,
-                offset: count,
-                successor_offsets_idx: successor_offsets_count,
+                offset: energies.nrows() as u32,
+                successor_offsets_idx: successor_offsets.len() as u32,
             });
             for &successor in &game.graph.adj[node as usize] {
-                let successor_energies = &game.energies[successor as usize];
-                energies.append(Axis(0), successor_energies.view()).unwrap();
-                successor_offsets.push(count);
-                count = count.checked_add(successor_energies.n_energies() as u32)
-                    .ok_or(Error::Overflow)?;
+                successor_offsets.push(energies.nrows() as u32);
+                energies.append(Axis(0), game.energies[successor as usize].view()).unwrap();
             }
             // Last "successor" is always the own node in the attack case
-            successor_offsets.push(count);
-            let own_energies = &game.energies[node as usize];
-            energies.append(Axis(0), own_energies.view()).unwrap();
-            // Add number of successors + 1 for own node
-            successor_offsets_count = successor_offsets_count.checked_add(
-                game.graph.adj[node as usize].len() as u32 + 1)
-                .ok_or(Error::Overflow)?;
-            count = count.checked_add(own_energies.n_energies() as u32).ok_or(Error::Overflow)?;
+            successor_offsets.push(energies.nrows() as u32);
+            energies.append(Axis(0), game.energies[node as usize].view()).unwrap();
+
+            // Check limits
+            let node_offsets_size = mem::size_of_val(&node_offsets);
+            let successor_offsets_size = mem::size_of_val(&successor_offsets);
+            let energies_size = energies.len() * mem::size_of::<u32>();
+            let workgroup_count = (energies.nrows() as u32).div_ceil(WORKGROUP_SIZE);
+            if workgroup_count > self.gpu.device.limits().max_compute_workgroups_per_dimension ||
+                energies_size > max_size ||
+                node_offsets_size > max_size ||
+                successor_offsets_size > max_size
+            {
+                // Mark last node offset as final cap
+                node_offsets.last_mut().unwrap().node = u32::MAX;
+                break;
+            }
+
+            visiting.insert(node);
         }
-        successor_offsets.push(count);
-        // Last offset does not correspond to another starting node, mark with u32::MAX
-        node_offsets.push(NodeOffsetAtk {
-            node: u32::MAX,
-            offset: count,
-            successor_offsets_idx: successor_offsets_count,
-        });
+
+        self.visit_list = &self.visit_list - &visiting;
+
+        if self.visit_list.is_empty() {
+            // Last offset does not correspond to another starting node, mark with u32::MAX
+            node_offsets.push(NodeOffsetAtk {
+                node: u32::MAX,
+                offset: energies.nrows() as u32,
+                successor_offsets_idx: successor_offsets.len() as u32,
+            });
+            successor_offsets.push(energies.nrows() as u32);
+        }
         let earray = EnergyArray::from_array(energies, game.graph.get_conf());
         trace!("Attack data: {:?}\n{:?}\n{}", node_offsets, successor_offsets, earray);
-        Ok((node_offsets, successor_offsets, earray))
+        (node_offsets, successor_offsets, earray)
+    }
+
+    #[inline]
+    fn prepare_run(&mut self, game: &EnergyGame) {
+        let data = self.collect_data(game);
+        self.update(data.0, data.1, data.2);
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
@@ -1555,12 +1628,9 @@ impl<'a> GPURunner<'a> {
             debug!("Defend Direct visit list: {:?}", self.defdir_shader.visit_list);
             debug!("Defend Iterative visit list: {:?}", self.defiter_shader.visit_list);
 
-            let (node_offsets, successor_offsets, energies) = self.atk_shader.collect_data(self.game)?;
-            self.atk_shader.update(node_offsets, successor_offsets, energies);
-            let (node_offsets, successor_offsets, energies) = self.defdir_shader.collect_data(self.game)?;
-            self.defdir_shader.update(node_offsets, successor_offsets, energies);
-            let (node_offsets, successor_offsets, energies) = self.defiter_shader.collect_data(self.game)?;
-            self.defiter_shader.update(node_offsets, successor_offsets, energies);
+            self.atk_shader.prepare_run(self.game);
+            self.defdir_shader.prepare_run(self.game);
+            self.defiter_shader.prepare_run(self.game);
 
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")
@@ -1577,11 +1647,6 @@ impl<'a> GPURunner<'a> {
             self.atk_shader.map_buffers(&sender);
             self.defdir_shader.map_buffers(&sender);
             self.defiter_shader.map_buffers(&sender);
-
-            // Reset visit lists
-            self.atk_shader.visit_list.clear();
-            self.defdir_shader.visit_list.clear();
-            self.defiter_shader.visit_list.clear();
 
             // Wait for the GPU to finish work
             self.gpu.device.poll(wgpu::Maintain::Wait);
