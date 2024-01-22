@@ -1463,22 +1463,6 @@ impl AttackShader {
                     }
                 }
             }
-            // The previous energies at the end are all still present.
-            //TODO: Rethink if this check is still needed.
-            if !changed && n_prev > 0 {
-                for minima_idx in ((cur.offset + n_new) / MINIMA_SIZE) ..= ((next_offset - 1) / MINIMA_SIZE) {
-                    let shift_start = (cur.offset + n_new).max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                    let pad_right = (next_offset - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
-                    let shift_end = MINIMA_SIZE - 1 - pad_right;
-                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
-
-                    let minima_chunk = minima[minima_idx as usize];
-                    if minima_chunk | !mask != u64::MAX {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
 
             if changed {
                 let indices: Vec<usize> = (cur.offset as usize..next_offset as usize)
