@@ -30,11 +30,20 @@ impl GPUCommon {
             .await
             .ok_or(Error::NoAdapter)?;
 
+        let available = adapter.limits();
+        let mut required_limits = wgpu::Limits::downlevel_defaults();
+        // Get as much buffer storage space as we can
+        // Otherwise use default limits with high compatibility
+        let max_size = available.max_buffer_size.min(available.max_storage_buffer_binding_size.into());
+        required_limits.max_storage_buffer_binding_size = max_size as u32;
+        required_limits.max_buffer_size = required_limits.max_buffer_size.max(max_size);
+        log::debug!("Setting max_storage_buffer_binding_size to {max_size}");
+
         Ok(adapter.request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits,
                 },
                 None,
             )
