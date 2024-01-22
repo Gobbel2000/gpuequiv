@@ -119,6 +119,7 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
     let nbase = sbase + extra_shift;
     for (var chunk = 0u; chunk < size; chunk += 64u) {
         let i = chunk + l_idx;
+        let extra_i = i + extra_shift;
         let energy = suprema[nbase + i];
         // Minimize energies
         var filter_out = 0u;
@@ -129,7 +130,7 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
                 // Skip reflexive comparisons,
                 // When energies are equal, keep only those with lower index
                 let eq = energy_eq(e2, energy);
-                if j != i && ((eq && i > j) ||
+                if j != extra_i && ((eq && extra_i > j) ||
                               (!eq && less_eq(e2, energy))) {
                     // Mark to be filtered out
                     filter_out = 1u;
