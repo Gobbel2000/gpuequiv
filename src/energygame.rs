@@ -671,7 +671,7 @@ impl DefendDirectShader {
             cpass.set_bind_group(0, &self.input_bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
 
-            let n_energies = self.energies.view().nrows() as u32;
+            let n_energies = self.node_offsets.last().map(|n| n.energy_offset).unwrap_or_default();
             let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
             cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
         }
@@ -1102,7 +1102,7 @@ impl DefendIterShader {
             cpass.set_bind_group(0, &self.input_bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
 
-            let n_energies = self.energies.view().nrows() as u32;
+            let n_energies = self.node_offsets.last().map(|n| n.energy_offset).unwrap_or_default();
             let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
             cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
         }
@@ -1451,7 +1451,7 @@ impl AttackShader {
     }
 
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
-        let n_energies = self.energies.n_energies() as u32;
+        let n_energies = self.node_offsets.last().map(|n| n.offset).unwrap_or_default();
         let workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
