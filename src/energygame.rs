@@ -1624,13 +1624,12 @@ impl<'a> GPURunner<'a> {
     pub async fn execute_gpu(&mut self) -> Result<()> {
         self.initialize_visit_lists();
         loop {
-            debug!("Attack visit list: {:?}", self.atk_shader.visit_list);
-            debug!("Defend Direct visit list: {:?}", self.defdir_shader.visit_list);
-            debug!("Defend Iterative visit list: {:?}", self.defiter_shader.visit_list);
-
             self.atk_shader.prepare_run(self.game);
             self.defdir_shader.prepare_run(self.game);
             self.defiter_shader.prepare_run(self.game);
+            debug!("Number of attack nodes: {}", self.atk_shader.node_offsets.len() - 1);
+            debug!("Number of defend (direct) nodes: {}", self.defdir_shader.node_offsets.len() - 1);
+            debug!("Number of defend (iterative) nodes: {}", self.defiter_shader.node_offsets.len() - 1);
 
             let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Algorithm iteration encoder")

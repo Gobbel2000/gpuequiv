@@ -11,7 +11,7 @@ use crate::TransitionSystem;
 use crate::energy::{EnergyConf, UpdateArray};
 use crate::energygame::{GameGraph, make_reverse};
 
-use gamepos::*;
+pub use gamepos::*;
 
 impl TransitionSystem {
     fn compare_enabled(&self, p: u32, q: u32) -> (bool, bool) {
@@ -112,12 +112,29 @@ impl GameBuild {
         }
     }
 
-    pub fn build(&mut self, p: u32, q: u32) {
+    pub fn compare(&mut self, p: u32, q: u32) {
         let idx = self.new_node(Position::Attack(AttackPosition {
             p,
             q: vec![q],
         }));
-        let mut frontier = VecDeque::from([idx]);
+        self.build_internal(VecDeque::from([idx]));
+    }
+
+    pub fn compare_all(&mut self) -> u32 {
+        for p in 0..self.lts.n_vertices() {
+            for q in 0..p {
+                // Only compare if p and q have the same enabled actions
+                if self.lts.compare_enabled(p, q) == (true, true) {
+                    self.new_node(Position::attack(p, vec![q]));
+                }
+            }
+        }
+        let n_starting_points = self.game.adj.len() as u32;
+        self.build_internal((0 .. n_starting_points).collect());
+        n_starting_points
+    }
+
+    fn build_internal(&mut self, mut frontier: VecDeque<u32>) {
         while let Some(idx) = frontier.pop_front() {
             let (positions, weights) = self.nodes[idx as usize].successors(&self.lts);
             let new_indices = self.add_nodes(idx as usize, positions, weights);

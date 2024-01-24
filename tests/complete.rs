@@ -1,6 +1,5 @@
 use gpuequiv::*;
 use gpuequiv::gamebuild::*;
-use gpuequiv::gamebuild::gamepos::*;
 
 // Example transition system from
 // Bisping 2023 - Process Equivalence Problems as Energy Games,
@@ -26,7 +25,7 @@ fn example() -> TransitionSystem {
 fn example_game_graph() {
     let lts = example();
     let mut builder = GameBuild::with_lts(lts);
-    builder.build(0, 1);
+    builder.compare(0, 1);
     assert_eq!(builder.nodes.iter().map(|p| p.as_ref()).collect::<Vec<_>>(),
         vec![
             &Position::attack(0, vec![1]), // (S, {S'}) a

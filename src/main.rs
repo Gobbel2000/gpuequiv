@@ -104,7 +104,7 @@ async fn build_game() -> io::Result<()> {
         ],
     );
     let mut builder = gamebuild::GameBuild::with_lts(lts);
-    builder.build(0, 1);
+    builder.compare(0, 1);
     let f = File::create("built_graph.json").unwrap();
     serde_json::to_writer_pretty(f, &builder.game).unwrap();
     for (i, p) in builder.nodes.iter().enumerate() {

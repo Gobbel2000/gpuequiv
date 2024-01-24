@@ -72,8 +72,10 @@ impl TransitionSystem {
                 max_label
             });
 
-            if from >= adj.len() {
-                adj.resize(from + 1, vec![]);
+            // If necessary, grow adjacency table to accommodate all mentioned nodes
+            let max_node = from.max(to as usize);
+            if max_node >= adj.len() {
+                adj.resize(max_node + 1, vec![]);
             }
             adj[from].push(Transition { process: to, label: label_n });
         }
@@ -98,7 +100,7 @@ impl TransitionSystem {
 
     pub fn build_game_graph(self, p: u32, q: u32) -> GameGraph {
         let mut builder = GameBuild::with_lts(self);
-        builder.build(p, q);
+        builder.compare(p, q);
         builder.game
     }
 
