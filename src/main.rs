@@ -2,9 +2,11 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::env;
 use std::io;
+use std::ops::Deref;
 
 use gpuequiv::*;
 use gpuequiv::energygame::*;
+use gpuequiv::gamebuild::*;
 
 // Varied, multidimensional updates, leading to multidimensional energies
 fn _multidimensional() -> EnergyGame {
@@ -147,9 +149,54 @@ async fn all() -> io::Result<()> {
 
 async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let lts = TransitionSystem::from_csv_file(fname)?;
-    for e in lts.winning_budgets(0, 1).await.unwrap() {
-        println!("{e}");
+    let mut builder = GameBuild::with_lts(lts);
+    let n_starting_points = builder.compare_all();
+    println!("Game built");
+    let n_edges: usize = builder.game.adj.iter()
+        .map(|adj| adj.len())
+        .sum();
+    println!("Number of nodes: {}", builder.game.n_vertices());
+    println!("Number of edges: {n_edges}");
+    //let game_graph = builder.game;
+    let nodes = builder.nodes;
+    let mut energy_game = EnergyGame::standard_reach(builder.game);
+    println!("Running game...");
+    let energies = energy_game.run().await.unwrap();
+    println!("Energy game finished");
+
+    let mut equivalence_classes: Vec<Vec<u32>> = Vec::new();
+    for (comp, e) in nodes[..n_starting_points as usize].iter().zip(energies) {
+        let pos = match Deref::deref(comp) {
+            Position::Attack(pos) => pos,
+            _ => unreachable!(),
+        };
+        let class_p = match equivalence_classes.iter().position(|c| c.contains(&pos.p)) {
+            Some(idx) => idx,
+            None => {
+                equivalence_classes.push(vec![pos.p]);
+                equivalence_classes.len() - 1
+            },
+        };
+        let q = pos.q[0];
+        let class_q = equivalence_classes.iter().position(|c| c.contains(&q));
+        if e.test_equivalence(std_equivalences::bisimulation()) {
+            if let Some(cq) = class_q {
+                if class_p != cq {
+                    let removed = equivalence_classes.remove(class_p.max(cq));
+                    equivalence_classes[class_p.min(cq)].extend(removed);
+                }
+            } else {
+                equivalence_classes[class_p].push(q);
+            }
+        } else {
+            if let None = class_q {
+                equivalence_classes.push(vec![q]);
+            }
+        }
     }
+
+    println!("{:?}", equivalence_classes);
+    println!("{}", equivalence_classes.len());
     Ok(())
 }
 
