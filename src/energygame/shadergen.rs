@@ -198,11 +198,6 @@ pub(super) fn build_defend_update(preproc: &ShaderPreproc) -> ShaderSource<'stat
     ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_update"))
 }
 
-pub(super) fn build_defend_direct(preproc: &ShaderPreproc) -> ShaderSource<'static> {
-    let shader_in = include_str!("defend_direct.wgsl");
-    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_direct"))
-}
-
 pub(super) fn build_defend_iterative(preproc: &ShaderPreproc) -> ShaderSource<'static> {
     let shader_in = include_str!("defend_iterative.wgsl");
     ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "defend_iterative"))
