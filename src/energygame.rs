@@ -233,17 +233,35 @@ impl GameGraph {
 
 
     fn buffers(&self, device: &Device) -> (Buffer, Buffer) {
-        let row_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph row offsets storage buffer"),
-            contents: bytemuck::cast_slice(&self.row_offsets),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let row_offsets_buffer = if self.row_offsets.is_empty() {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Input graph row offsets buffer (empty)"),
+                size: 8,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        } else {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Input graph row offsets storage buffer"),
+                contents: bytemuck::cast_slice(&self.row_offsets),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
+        };
 
-        let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Input graph edge weights storage buffer"),
-            contents: self.weights.data(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let weights_buffer = if self.weights.n_updates() == 0 {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Input graph edge weights buffer (empty)"),
+                size: 8,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        } else {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Input graph edge weights storage buffer"),
+                contents: self.weights.data(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
+        };
 
         (row_offsets_buffer, weights_buffer)
     }
