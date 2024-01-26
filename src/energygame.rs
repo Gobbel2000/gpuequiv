@@ -755,7 +755,7 @@ impl DefendIterShader {
                 energies.append(Axis(0), game.energies[successor as usize].view()).unwrap();
             }
             // Allocate the requested amount of suprema memory for this node
-            sup_count = sup_count.saturating_add(mem as u32);
+            sup_count = sup_count.saturating_add(mem);
 
             // Check limits
             let node_offsets_size = mem::size_of_val(&node_offsets);

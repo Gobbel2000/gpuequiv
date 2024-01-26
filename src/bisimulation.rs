@@ -22,10 +22,10 @@ impl TransitionSystem {
             let signatures = self.signatures(&partition);
             let mut sigmap = FxHashMap::default();
             for sig in &signatures {
-                if !sigmap.contains_key(&sig) {
-                    sigmap.insert(sig, new_count);
+                sigmap.entry(sig).or_insert_with(|| {
                     new_count += 1;
-                }
+                    new_count - 1
+                });
             }
             for (part, sig) in partition.iter_mut().zip(&signatures) {
                 *part = sigmap[&sig];

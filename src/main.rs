@@ -184,10 +184,8 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
             } else {
                 equivalence_classes[class_p].push(q);
             }
-        } else {
-            if let None = class_q {
-                equivalence_classes.push(vec![q]);
-            }
+        } else if class_q.is_none() {
+            equivalence_classes.push(vec![q]);
         }
     }
 
