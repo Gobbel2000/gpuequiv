@@ -406,6 +406,7 @@ struct DefendDirectShader {
     sup_staging_buf: Buffer,
     minima_buf: Buffer,
     minima_staging_buf: Buffer,
+    work_size_buf: Buffer,
 
     input_bind_group: wgpu::BindGroup,
     input_bind_group_layout: wgpu::BindGroupLayout,
@@ -455,12 +456,30 @@ impl DefendDirectShader {
         let (minima_buf, minima_staging_buf) = Self::new_output_buf(
             &gpu.device, INITIAL_CAPACITY, Some("Minima flags"));
 
+        let work_size_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Direct work size uniform buffer"),
+            size: mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Defend Direct common input bind group layout"),
             entries: &[
                 bgl_entry(0, false), // energies, writable
                 bgl_entry(1, true),  // node offsets
                 bgl_entry(2, true),  // successor offsets
+                // work_size, uniform
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let input_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -478,6 +497,10 @@ impl DefendDirectShader {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: work_size_buf.as_entire_binding(),
                 },
             ],
         });
@@ -556,6 +579,7 @@ impl DefendDirectShader {
             sup_staging_buf,
             minima_buf,
             minima_staging_buf,
+            work_size_buf,
 
             input_bind_group,
             input_bind_group_layout,
@@ -577,6 +601,7 @@ impl DefendDirectShader {
         let device = &self.gpu.device;
         let queue = &self.gpu.queue;
 
+        queue.write_buffer(&self.work_size_buf, 0, bytemuck::bytes_of(&(node_offsets.len() as u32)));
         if energies.view().len() * std::mem::size_of::<u32>() > self.energies_buf.size() as usize {
             self.energies_buf = Self::get_energies_buf(device, &energies);
         } else {
@@ -584,8 +609,7 @@ impl DefendDirectShader {
         }
         self.energies = energies;
 
-        // Make sure the node offsets buffer always has exactly the right size
-        if node_offsets.len() * std::mem::size_of::<NodeOffsetDef>() != self.node_offsets_buf.size() as usize {
+        if (node_offsets.len() * std::mem::size_of::<NodeOffsetDef>()) as u64 > self.node_offsets_buf.size() {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Defend Direct node offsets storage buffer"),
                 contents: bytemuck::cast_slice(&node_offsets),
@@ -631,6 +655,10 @@ impl DefendDirectShader {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.work_size_buf.as_entire_binding(),
                 },
             ],
         });
@@ -848,6 +876,7 @@ struct DefendIterShader {
     sup_staging_buf: Buffer,
     status_buf: Buffer,
     status_staging_buf: Buffer,
+    work_size_buf: Buffer,
 
     input_bind_group: wgpu::BindGroup,
     input_bind_group_layout: wgpu::BindGroupLayout,
@@ -900,12 +929,30 @@ impl DefendIterShader {
             Some("Intersection status"),
         );
 
+        let work_size_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Defend Iterative work size uniform buffer"),
+            size: mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Defend Iterative common input bind group layout"),
             entries: &[
                 bgl_entry(0, false), // energies, writable
                 bgl_entry(1, true),  // node offsets
                 bgl_entry(2, true),  // successor offsets
+                // work_size, uniform
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let input_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -923,6 +970,10 @@ impl DefendIterShader {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: work_size_buf.as_entire_binding(),
                 },
             ],
         });
@@ -994,6 +1045,7 @@ impl DefendIterShader {
             sup_staging_buf,
             status_buf,
             status_staging_buf,
+            work_size_buf,
 
             input_bind_group,
             input_bind_group_layout,
@@ -1013,6 +1065,7 @@ impl DefendIterShader {
         let device = &self.gpu.device;
         let queue = &self.gpu.queue;
 
+        queue.write_buffer(&self.work_size_buf, 0, bytemuck::bytes_of(&(node_offsets.len() as u32)));
         if energies.view().len() * mem::size_of::<u32>() > self.energies_buf.size() as usize {
             self.energies_buf = Self::get_energies_buf(device, &energies);
         } else {
@@ -1020,8 +1073,7 @@ impl DefendIterShader {
         }
         self.energies = energies;
 
-        // Make sure the node offsets buffer always has exactly the right size
-        if node_offsets.len() * mem::size_of::<NodeOffsetDef>() != self.node_offsets_buf.size() as usize {
+        if (node_offsets.len() * mem::size_of::<NodeOffsetDef>()) as u64 > self.node_offsets_buf.size() {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Defend Iterative node offsets storage buffer"),
                 contents: bytemuck::cast_slice(&node_offsets),
@@ -1067,6 +1119,10 @@ impl DefendIterShader {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.successor_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.work_size_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1266,6 +1322,7 @@ struct AttackShader {
     successor_offsets_buf: Buffer,
     minima_buf: Buffer,
     minima_staging_buf: Buffer,
+    work_size_buf: Buffer,
 
     bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -1314,6 +1371,13 @@ impl AttackShader {
         let (minima_buf, minima_staging_buf) = Self::new_output_buf(
             &gpu.device, INITIAL_CAPACITY, Some("Minima flags"));
 
+        let work_size_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Attack work size uniform buffer"),
+            size: mem::size_of::<u32>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Attack energy bind group layout"),
             entries: &[
@@ -1321,6 +1385,17 @@ impl AttackShader {
                 bgl_entry(1, true),  // node offsets
                 bgl_entry(2, true),  // successor offsets
                 bgl_entry(3, false), // minima, writable
+                // work_size, uniform
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1342,6 +1417,10 @@ impl AttackShader {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: minima_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: work_size_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1379,6 +1458,7 @@ impl AttackShader {
             successor_offsets_buf,
             minima_buf,
             minima_staging_buf,
+            work_size_buf,
 
             bind_group,
             bind_group_layout,
@@ -1395,7 +1475,8 @@ impl AttackShader {
         let device = &self.gpu.device;
         let queue = &self.gpu.queue;
 
-        if energies.view().len() * mem::size_of::<u32>() > self.energies_buf.size() as usize {
+        queue.write_buffer(&self.work_size_buf, 0, bytemuck::bytes_of(&(node_offsets.len() as u32)));
+        if (energies.view().len() * mem::size_of::<u32>()) as u64 > self.energies_buf.size() {
             self.energies_buf = Self::get_energies_buf(device, &energies);
             self.energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("{} Energies staging buffer", Self::name())),
@@ -1408,8 +1489,7 @@ impl AttackShader {
         }
         self.energies = energies;
 
-        // Make sure the node offsets buffer always has exactly the right size
-        if node_offsets.len() * mem::size_of::<NodeOffsetAtk>() != self.node_offsets_buf.size() as usize {
+        if (node_offsets.len() * mem::size_of::<NodeOffsetAtk>()) as u64 > self.node_offsets_buf.size() {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Node offsets storage buffer", Self::name())),
                 contents: bytemuck::cast_slice(&node_offsets),
@@ -1451,6 +1531,10 @@ impl AttackShader {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.minima_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.work_size_buf.as_entire_binding(),
                 },
             ],
         });

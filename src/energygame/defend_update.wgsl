@@ -10,6 +10,9 @@ var<storage> node_offsets: array<NodeOffset>;
 @group(0) @binding(2)
 var<storage> successor_offsets: array<u32>;
 
+@group(0) @binding(3)
+var<uniform> work_size: u32;
+
 
 @group(1) @binding(0)
 var<storage> graph_row_offsets: array<u32>;
@@ -44,8 +47,8 @@ $UPDATE1
 }
 
 fn binsearch(i: u32) -> u32 {
-    let last = arrayLength(&node_offsets) - 1u;
-    var stride = arrayLength(&node_offsets);
+    let last = work_size - 1u;
+    var stride = work_size;
     var l = 0u;
     while stride > 0u {
         // Halve stride, but don't overshoot buffer bounds
@@ -61,9 +64,7 @@ fn binsearch(i: u32) -> u32 {
 @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) g_id:vec3<u32>) {
     let i = g_id.x;
-    let n_nodes = arrayLength(&node_offsets);
-
-    if i >= node_offsets[n_nodes - 1u].energy_offset {
+    if i >= node_offsets[work_size - 1u].energy_offset {
         return;
     }
 
