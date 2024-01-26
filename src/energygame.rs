@@ -94,7 +94,8 @@ impl TryFrom<SerdeGameGraph> for GameGraph {
             column_indices,
             row_offsets,
             weights: weights?,
-            reverse: Vec::new(),
+            rev_column_indices: Vec::new(),
+            rev_row_offsets: Vec::new(),
             attacker_pos: deserialized.attacker_pos,
             conf: deserialized.conf,
         };
@@ -113,8 +114,11 @@ pub struct GameGraph {
     pub row_offsets: Vec<u32>,
     // weights is structured like column_indices, they must have the same length
     pub weights: UpdateArray,
-    // Reverse edges of graph. This is not stored as CSR, because it is not needed on the GPU
-    pub reverse: Vec<Vec<u32>>,
+
+    // Reverse edges of graph, also as CSR
+    pub rev_column_indices: Vec<u32>,
+    pub rev_row_offsets: Vec<u32>,
+
     // Whether each node is an attacker position or not
     pub attacker_pos: Vec<bool>,
     conf: EnergyConf,
@@ -156,11 +160,21 @@ impl GameGraph {
             .collect();
         let weights = UpdateArray::from_conf(&flat_weights, conf).unwrap();
 
+        let rev_row_offsets = iter::once(0).chain(
+            reverse.iter()
+            .scan(0, |state, adj| {
+                *state += adj.len() as u32;
+                Some(*state)
+            }))
+            .collect();
+        let rev_column_indices = reverse.into_iter().flatten().collect();
+
         Self {
             column_indices,
             row_offsets,
             weights,
-            reverse,
+            rev_column_indices,
+            rev_row_offsets,
             attacker_pos,
             conf,
         }
@@ -171,23 +185,33 @@ impl GameGraph {
             column_indices: Vec::new(),
             row_offsets: Vec::new(),
             weights: UpdateArray::empty(conf),
-            reverse: Vec::new(),
+            rev_column_indices: Vec::new(),
+            rev_row_offsets: Vec::new(),
             attacker_pos: Vec::new(),
             conf,
         }
     }
 
+    #[inline]
     pub fn n_vertices(&self) -> u32 {
         self.attacker_pos.len() as u32
     }
 
+    #[inline]
     pub fn get_conf(&self) -> EnergyConf {
         self.conf
     }
 
+    #[inline]
     pub fn adj(&self, v: u32) -> &[u32] {
         let v = v as usize;
         &self.column_indices[self.row_offsets[v] as usize .. self.row_offsets[v + 1] as usize]
+    }
+
+    #[inline]
+    pub fn reverse(&self, v: u32) -> &[u32] {
+        let v = v as usize;
+        &self.rev_column_indices[self.rev_row_offsets[v] as usize .. self.rev_row_offsets[v + 1] as usize]
     }
 
     pub fn make_reverse(&mut self) {
@@ -197,7 +221,14 @@ impl GameGraph {
                 reverse[to as usize].push(from);
             }
         }
-        self.reverse = reverse;
+        self.rev_row_offsets = iter::once(0).chain(
+            reverse.iter()
+            .scan(0, |state, adj| {
+                *state += adj.len() as u32;
+                Some(*state)
+            }))
+            .collect();
+        self.rev_column_indices = reverse.into_iter().flatten().collect();
     }
 
 
@@ -1289,7 +1320,7 @@ impl<'a> GPURunner<'a> {
     fn changed_nodes(&mut self, nodes: &[u32]) {
         for &v in nodes {
             // Start with parent nodes of final points
-            for &w in &self.game.graph.reverse[v as usize] {
+            for &w in self.game.graph.reverse(v) {
                 if self.game.graph.attacker_pos[w as usize] {
                     self.atk_shader.visit_list.insert(w);
                 } else {
