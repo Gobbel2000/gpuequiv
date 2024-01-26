@@ -75,10 +75,8 @@ async fn simple_one_dimension() {
     let c = EnergyConf::STANDARD;
     let mut game = simple_graph();
     // Set all updates (edge weights) to -1, 0, 0, ...
-    for array in game.graph.weights.iter_mut() {
-        for i in 0..array.n_updates() {
-            array.set(i, Update::new(&[Upd::Decrement], array.get_conf()).unwrap());
-        }
+    for i in 0..game.graph.column_indices.len() {
+        game.graph.weights.set(i, Update::new(&[Upd::Decrement], c).unwrap());
     }
     // Energies saturate at 3
     assert_eq!(game.run().await.unwrap(),

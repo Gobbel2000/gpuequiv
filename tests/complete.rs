@@ -68,10 +68,10 @@ fn example_game_graph() {
         vec![],
         vec![1, 8],
     ];
-    assert_eq!(builder.game.adj.len(), adj_expected.len());
-    for (i, (adj, exp)) in builder.game.adj.iter().zip(adj_expected).enumerate() {
+    assert_eq!(builder.game.n_vertices() as usize, adj_expected.len());
+    for (i, exp) in adj_expected.into_iter().enumerate() {
         // Compare adjacency lists without regard to ordering
-        let mut adj_copy = adj.clone();
+        let mut adj_copy = builder.game.adj(i as u32).to_vec();
         adj_copy.sort();
         assert_eq!(adj_copy, exp, "Adjacency list for node {i} is wrong");
     }

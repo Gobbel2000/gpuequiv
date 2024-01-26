@@ -152,12 +152,8 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let mut builder = GameBuild::with_lts(lts);
     let n_starting_points = builder.compare_all_but_bisimilar();
     println!("Game built");
-    let n_edges: usize = builder.game.adj.iter()
-        .map(|adj| adj.len())
-        .sum();
     println!("Number of nodes: {}", builder.game.n_vertices());
-    println!("Number of edges: {n_edges}");
-    //let game_graph = builder.game;
+    println!("Number of edges: {}", builder.game.column_indices.len());
     let nodes = builder.nodes;
     let mut energy_game = EnergyGame::standard_reach(builder.game);
     println!("Running game...");

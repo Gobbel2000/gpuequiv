@@ -15,12 +15,9 @@ var<storage, read_write> minima: array<u32>;
 
 
 @group(1) @binding(0)
-var<storage> graph_column_indices: array<u32>;
-
-@group(1) @binding(1)
 var<storage> graph_row_offsets: array<u32>;
 
-@group(1) @binding(2)
+@group(1) @binding(1)
 var<storage> graph_weights: array<Update>;
 
 struct NodeOffset {

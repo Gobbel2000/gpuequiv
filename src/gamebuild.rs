@@ -1,15 +1,14 @@
 pub mod gamepos;
 
-use std::collections::VecDeque;
 use std::cmp::Ordering;
-use std::ops::Range;
 use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use ndarray::Axis;
 
 use crate::TransitionSystem;
 use crate::energy::{EnergyConf, UpdateArray};
-use crate::energygame::{GameGraph, make_reverse};
+use crate::energygame::GameGraph;
 
 pub use gamepos::*;
 
@@ -113,11 +112,8 @@ impl GameBuild {
     }
 
     pub fn compare(&mut self, p: u32, q: u32) {
-        let idx = self.new_node(Position::Attack(AttackPosition {
-            p,
-            q: vec![q],
-        }));
-        self.build_internal(VecDeque::from([idx]));
+        self.new_node(Position::attack(p, vec![q]));
+        self.build_internal();
     }
 
     pub fn compare_all(&mut self) -> u32 {
@@ -129,8 +125,8 @@ impl GameBuild {
                 }
             }
         }
-        let n_starting_points = self.game.adj.len() as u32;
-        self.build_internal((0 .. n_starting_points).collect());
+        let n_starting_points = self.game.n_vertices();
+        self.build_internal();
         n_starting_points
     }
 
@@ -152,45 +148,39 @@ impl GameBuild {
                 self.new_node(Position::attack(p, vec![q]));
             }
         }
-        let n_starting_points = self.game.adj.len() as u32;
-        self.build_internal((0 .. n_starting_points).collect());
+        let n_starting_points = self.game.n_vertices();
+        self.build_internal();
         n_starting_points
     }
 
-    fn build_internal(&mut self, mut frontier: VecDeque<u32>) {
-        while let Some(idx) = frontier.pop_front() {
+    fn build_internal(&mut self) {
+        let mut idx = 0;
+        while idx < self.game.n_vertices() {
             let (positions, weights) = self.nodes[idx as usize].successors(&self.lts);
-            let new_indices = self.add_nodes(idx as usize, positions, weights);
-            frontier.extend(new_indices);
+            self.add_nodes(positions, weights);
+            idx += 1;
         }
-        self.game.reverse = make_reverse(&self.game.adj);
+        self.game.row_offsets.push(self.game.column_indices.len() as u32);
+        self.game.make_reverse();
     }
 
     // Assumes that `positions` contains no duplicates
-    fn add_nodes(
-        &mut self,
-        start: usize,
-        positions: Vec<Position>,
-        weights: UpdateArray,
-    ) -> Range<u32> {
-        let first_new = self.game.adj.len() as u32;
-        // Gather indices of provided positions
-        self.game.adj[start] = positions.into_iter().map(|pos|
-                self.node_map.get(&pos).copied()           // Existing node
-                    .unwrap_or_else(|| self.new_node(pos)) // New node
-            )
-            .collect();
-        self.game.weights[start] = weights;
-        // Return slice of newly added node indices
-        first_new..self.game.adj.len() as u32
+    fn add_nodes(&mut self, positions: Vec<Position>, weights: UpdateArray) {
+        // Start range of next node
+        self.game.row_offsets.push(self.game.column_indices.len() as u32);
+        for pos in positions {
+            // Gather indices of provided positions
+            let suc = self.node_map.get(&pos).copied()  // Existing node
+                .unwrap_or_else(|| self.new_node(pos)); // New node
+            self.game.column_indices.push(suc);
+        }
+        self.game.weights.array.append(Axis(0), weights.array.view()).unwrap();
     }
 
     // Create new node and return its index
     fn new_node(&mut self, pos: Position) -> u32 {
-        let idx = self.game.adj.len() as u32;
+        let idx = self.game.n_vertices();
         // Add new empty node into game graph
-        self.game.adj.push(Vec::new());
-        self.game.weights.push(UpdateArray::empty(Self::ENERGY_CONF));
         self.game.attacker_pos.push(pos.is_attack());
 
         // Keep track of  positions <=> idx  symbol tables

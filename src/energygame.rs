@@ -21,7 +21,7 @@ use wgpu::util::DeviceExt;
 
 use crate::error::*;
 use crate::energy::*;
-use gpuutils::{GPUCommon, bgl_entry, buffer_fits, GPUGraph};
+use gpuutils::{GPUCommon, bgl_entry, buffer_fits};
 use shadergen::{ShaderPreproc, make_replacements,
     build_attack, build_defend_update, build_defend_direct, build_defend_iterative};
 
@@ -41,11 +41,17 @@ struct SerdeGameGraph {
 
 impl From<GameGraph> for SerdeGameGraph {
     fn from(graph: GameGraph) -> Self {
-        let weights = graph.weights.iter().map(|array| array.into())
-            .collect();
+        let mut adj = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..graph.n_vertices() {
+            adj.push(graph.adj(i).to_vec());
+            let weight = graph.weights.array.slice(
+                s![graph.row_offsets[i as usize] as usize .. graph.row_offsets[i as usize + 1] as usize, ..]);
+            weights.push((&UpdateArray::from_array(weight.to_owned(), graph.conf)).into());
+        }
         Self {
             conf: graph.conf,
-            adj: graph.adj,
+            adj,
             weights,
             attacker_pos: graph.attacker_pos,
         }
@@ -71,38 +77,45 @@ impl TryFrom<SerdeGameGraph> for GameGraph {
             }
         }
 
-        let reverse = make_reverse(&deserialized.adj);
-        let weights: std::result::Result<Vec<UpdateArray>, Self::Error> = deserialized.weights
-            .iter()
-            .map(|list| UpdateArray::from_conf(list.as_slice(), deserialized.conf))
+        let flat_weights: Vec<_> = deserialized.weights.into_iter().flatten().collect();
+        let weights: std::result::Result<UpdateArray, Self::Error> =
+            UpdateArray::from_conf(flat_weights.as_slice(), deserialized.conf);
+        let row_offsets = iter::once(0).chain(
+            deserialized.adj.iter()
+            .scan(0, |state, adj| {
+                *state += adj.len() as u32;
+                Some(*state)
+            }))
             .collect();
-        Ok(GameGraph {
-            reverse,
-            adj: deserialized.adj,
+        let column_indices = deserialized.adj.into_iter()
+            .flatten()
+            .collect();
+        let mut graph = GameGraph {
+            column_indices,
+            row_offsets,
             weights: weights?,
+            reverse: Vec::new(),
             attacker_pos: deserialized.attacker_pos,
             conf: deserialized.conf,
-        })
+        };
+        graph.make_reverse();
+        Ok(graph)
     }
 }
 
-pub fn make_reverse(adj: &Vec<Vec<u32>>) -> Vec<Vec<u32>> {
-    let mut reverse = vec![vec![]; adj.len()];
-    for (from, adj) in adj.iter().enumerate() {
-        for to in adj {
-            reverse[*to as usize].push(from as u32);
-        }
-    }
-    reverse
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "SerdeGameGraph", into = "SerdeGameGraph")]
 pub struct GameGraph {
-    pub adj: Vec<Vec<u32>>,
+    // CSR graph representation. colmumn_indices is all adjacency lists, flattened out
+    pub column_indices: Vec<u32>,
+    // row_offsets shows where each node's successors start in column_indices array
+    pub row_offsets: Vec<u32>,
+    // weights is structured like column_indices, they must have the same length
+    pub weights: UpdateArray,
+    // Reverse edges of graph. This is not stored as CSR, because it is not needed on the GPU
     pub reverse: Vec<Vec<u32>>,
-    // One weight per edge, grouped by start node
-    pub weights: Vec<UpdateArray>,
+    // Whether each node is an attacker position or not
     pub attacker_pos: Vec<bool>,
     conf: EnergyConf,
 }
@@ -127,15 +140,27 @@ impl GameGraph {
             reverse[to as usize].push(from);
             raw_weights[from as usize].push(e);
         }
-        let weights = raw_weights.iter().map(|upd_list| {
-                UpdateArray::from_conf(upd_list.as_slice(), conf).unwrap()
-            })
+        // Cumulative sum of all list lengths. 0 is prepended manually
+        let row_offsets = iter::once(0).chain(
+            adj.iter()
+            .scan(0, |state, adj| {
+                *state += adj.len() as u32;
+                Some(*state)
+            }))
             .collect();
+        let column_indices = adj.into_iter()
+            .flatten()
+            .collect();
+        let flat_weights: Vec<T> = raw_weights.into_iter()
+            .flatten()
+            .collect();
+        let weights = UpdateArray::from_conf(&flat_weights, conf).unwrap();
 
         Self {
-            adj,
-            reverse,
+            column_indices,
+            row_offsets,
             weights,
+            reverse,
             attacker_pos,
             conf,
         }
@@ -143,44 +168,91 @@ impl GameGraph {
 
     pub fn empty(conf: EnergyConf) -> Self {
         Self {
-            adj: Vec::new(),
+            column_indices: Vec::new(),
+            row_offsets: Vec::new(),
+            weights: UpdateArray::empty(conf),
             reverse: Vec::new(),
-            weights: Vec::new(),
             attacker_pos: Vec::new(),
             conf,
         }
     }
 
     pub fn n_vertices(&self) -> u32 {
-        self.adj.len() as u32
+        self.attacker_pos.len() as u32
     }
 
     pub fn get_conf(&self) -> EnergyConf {
         self.conf
     }
-}
 
-impl GPUGraph for GameGraph {
-    type Weight = u8;
+    pub fn adj(&self, v: u32) -> &[u32] {
+        let v = v as usize;
+        &self.column_indices[self.row_offsets[v] as usize .. self.row_offsets[v + 1] as usize]
+    }
 
-    fn csr(&self) -> (Vec<u32>, Vec<u32>, Vec<Self::Weight>) {
-        let column_indices = self.adj.iter()
-            .flatten()
-            .copied()
-            .collect();
-        let weights = self.weights.iter()
-            .flat_map(|e| e.data())
-            .copied()
-            .collect();
-        // Cumulative sum of all list lengths. 0 is prepended manually
-        let row_offsets = iter::once(0).chain(
-            self.adj.iter()
-            .scan(0, |state, adj| {
-                *state += adj.len() as u32;
-                Some(*state)
-            }))
-            .collect();
-        (column_indices, row_offsets, weights)
+    pub fn make_reverse(&mut self) {
+        let mut reverse = vec![vec![]; self.n_vertices() as usize];
+        for from in 0..self.n_vertices() {
+            for &to in self.adj(from) {
+                reverse[to as usize].push(from);
+            }
+        }
+        self.reverse = reverse;
+    }
+
+
+    fn buffers(&self, device: &Device) -> (Buffer, Buffer) {
+        let row_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Input graph row offsets storage buffer"),
+            contents: bytemuck::cast_slice(&self.row_offsets),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Input graph edge weights storage buffer"),
+            contents: self.weights.data(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        (row_offsets_buffer, weights_buffer)
+    }
+
+    fn bind_group_layout(device: &Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Input graph bind group layout"),
+            entries: &[
+                bgl_entry(0, true), // graph row offsets
+                bgl_entry(1, true), // graph edge weights
+            ],
+        })
+    }
+
+    fn bind_group_from_parts(
+        buffers: &(Buffer, Buffer),
+        layout: &wgpu::BindGroupLayout,
+        device: &Device,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Input graph bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { // graph row offsets
+                    binding: 0,
+                    resource: buffers.0.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry { // graph edge weights
+                    binding: 1,
+                    resource: buffers.1.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    fn bind_group(&self, device: &Device) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
+        let layout = Self::bind_group_layout(device);
+        let buffers = self.buffers(device);
+        let bind_group = Self::bind_group_from_parts(&buffers, &layout, device);
+        (layout, bind_group)
     }
 }
 
@@ -198,7 +270,7 @@ impl EnergyGame {
     // Automatically set nodes to be reached to all defense nodes without outgoing edges
     pub fn standard_reach(graph: GameGraph) -> Self {
         let to_reach = (0..graph.n_vertices())
-            .filter(|&v| !graph.attacker_pos[v as usize] && graph.adj[v as usize].is_empty())
+            .filter(|&v| !graph.attacker_pos[v as usize] && graph.adj(v).is_empty())
             .collect();
         Self::with_reach(graph, to_reach)
     }
@@ -593,10 +665,9 @@ impl DefendDirectShader {
         let mut visiting = FxHashSet::default();
         for &node in &self.visit_list {
             visiting.insert(node);
-            let snode = node as usize;
 
             // If any successor has no energies associated yet, skip this node
-            if game.graph.adj[snode].iter()
+            if game.graph.adj(node).iter()
                 .any(|&suc| game.energies[suc as usize].is_empty())
             { continue }
 
@@ -607,7 +678,7 @@ impl DefendDirectShader {
                 sup_offset: sup_count,
             });
             let mut cur_sup_count: u32 = 1;
-            for &successor in &game.graph.adj[snode] {
+            for &successor in game.graph.adj(node) {
                 successor_offsets.push(energies.nrows() as u32);
                 let successor_energies = &game.energies[successor as usize];
                 energies.append(Axis(0), successor_energies.view()).unwrap();
@@ -1030,10 +1101,9 @@ impl DefendIterShader {
         let visit_list: Vec<(u32, u32)> = self.visit_list.iter().map(|(&k, &v)| (k, v)).collect();
         for (node, mem) in visit_list {
             self.visit_list.remove(&node);
-            let snode = node as usize;
 
             // If any successor has no energies associated yet, skip this node
-            if game.graph.adj[snode].iter()
+            if game.graph.adj(node).iter()
                 .any(|&suc| game.energies[suc as usize].is_empty())
             { continue }
 
@@ -1043,7 +1113,7 @@ impl DefendIterShader {
                 energy_offset: energies.nrows() as u32,
                 sup_offset: sup_count,
             });
-            for &successor in &game.graph.adj[snode] {
+            for &successor in game.graph.adj(node) {
                 successor_offsets.push(energies.nrows() as u32);
                 energies.append(Axis(0), game.energies[successor as usize].view()).unwrap();
             }
@@ -1402,7 +1472,7 @@ impl AttackShader {
                 offset: energies.nrows() as u32,
                 successor_offsets_idx: successor_offsets.len() as u32,
             });
-            for &successor in &game.graph.adj[node as usize] {
+            for &successor in game.graph.adj(node) {
                 successor_offsets.push(energies.nrows() as u32);
                 energies.append(Axis(0), game.energies[successor as usize].view()).unwrap();
             }
@@ -1606,7 +1676,7 @@ impl<'a> GPURunner<'a> {
                 if self.game.graph.attacker_pos[w as usize] {
                     self.atk_shader.visit_list.insert(w);
                 } else {
-                    let combinations: u32 = self.game.graph.adj[w as usize].iter()
+                    let combinations: u32 = self.game.graph.adj(w).iter()
                         .map(|&suc| self.game.energies[suc as usize].n_energies() as u32)
                         .reduce(|acc, e| acc.saturating_mul(e))
                         .unwrap_or_default();
