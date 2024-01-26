@@ -219,18 +219,17 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
         let suc_width = successor_offsets[suc + 1u] - successor_offsets[suc];
         // We will combine each previous energy with each energy of this successor
         let comb_size = slen * suc_width;
-        // Combinations will be written behind previous energies at first.
-        let temp_size = comb_size + slen;
-        if temp_size > available_mem {
-            // Not enough memory, abort.
-            status[wg_id.x] = - i32(temp_size);
-            return;
-        }
         // Where to write the next chunk of combinations. This depends on the
         // number of minimal energies left after each chunk of combinations.
         var n_minimized = 0u;
         // Combine with energies from next successor
         for (var chunk = 0u; chunk < comb_size; chunk += 64u) {
+            let required_mem = slen + n_minimized + min(comb_size - chunk, 64u);
+            if required_mem > available_mem {
+                // Not enough memory, abort.
+                status[wg_id.x] = - i32(required_mem);
+                return;
+            }
             let i = chunk + l_idx;
             if i < comb_size {
                 let prev_pick = i % slen;

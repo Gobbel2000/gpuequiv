@@ -288,23 +288,20 @@ async fn test_defend_intersection_antichain() {
     // Verify output
     let status_data = runner.defiter_shader.status_staging_buf.slice(..).get_mapped_range();
     let status: &[i32] = bytemuck::cast_slice(&status_data);
-    // Still not enough. This time we know that we need 141**2 for the combinations plus 141 for
-    // the previous energies.
-    assert_eq!(status[0], - ((n_energies.pow(2) + n_energies) as i32));
+    assert_eq!(status[0], -257);
 
     // Unmap buffers
     drop(status_data);
     runner.defiter_shader.status_staging_buf.unmap();
     runner.defiter_shader.sup_staging_buf.unmap();
 
-    println!("Now with large array");
-    // This should be enough: 2**15 = 32768
+    println!("Now with sufficiently large array");
     runner.defiter_shader.update(
         vec![NodeOffsetDef::zeroed(), NodeOffsetDef {
             node: u32::MAX,
             successor_offsets_idx: 4,
             energy_offset: n_energies * 4,
-            sup_offset: 32768,
+            sup_offset: 512,
         }],
         vec![0, n_energies, n_energies * 2, n_energies * 3, n_energies * 4],
         runner.defiter_shader.energies.clone(),

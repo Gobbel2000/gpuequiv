@@ -113,11 +113,11 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
             @builtin(local_invocation_index) l_idx: u32)
 {
     let i = g_id.x;
-    let start_node_idx = binsearch(i);
-
     if i >= node_offsets[work_size - 1u].offset {
         return;
     }
+
+    let start_node_idx = binsearch(i);
 
     let packing_offset = l_idx & 0x1fu; // zero everything but last 5 bits, l_idx % 32
     var is_minimal = 1u << packing_offset;
