@@ -150,7 +150,7 @@ async fn all() -> io::Result<()> {
 async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let lts = TransitionSystem::from_csv_file(fname)?;
     let mut builder = GameBuild::with_lts(lts);
-    let n_starting_points = builder.compare_all();
+    let n_starting_points = builder.compare_all_but_bisimilar();
     println!("Game built");
     let n_edges: usize = builder.game.adj.iter()
         .map(|adj| adj.len())
@@ -195,8 +195,23 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
         }
     }
 
-    println!("{:?}", equivalence_classes);
+    for c in &equivalence_classes {
+        println!("{:?}", c);
+    }
     println!("{}", equivalence_classes.len());
+    Ok(())
+}
+
+fn csv_bisimulation(fname: &OsStr) -> io::Result<()> {
+    let lts = TransitionSystem::from_csv_file(fname)?;
+    let partition = lts.signature_refinement();
+    let n_classes = partition.iter().max().copied().unwrap_or_default() + 1;
+    let mut classes = vec![vec![]; n_classes as usize];
+    for (i, &p) in partition.iter().enumerate() {
+        classes[p as usize].push(i);
+    }
+    println!("{:?}", classes);
+    println!("{n_classes}");
     Ok(())
 }
 
@@ -212,6 +227,7 @@ fn main() -> io::Result<()> {
         },
         3 => match args.nth(1).unwrap().to_str() {
             Some("csv") => pollster::block_on(csv_lts(&args.next().unwrap())),
+            Some("bisim") => csv_bisimulation(&args.next().unwrap()),
             _ => Ok(invalid_args()),
         },
         _ => Ok(invalid_args()),

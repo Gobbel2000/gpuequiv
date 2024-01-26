@@ -2,6 +2,7 @@ pub mod energy;
 pub mod energygame;
 pub mod gamebuild;
 pub mod error;
+mod bisimulation;
 
 // Re-exports
 pub use energy::*;

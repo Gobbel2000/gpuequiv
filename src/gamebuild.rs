@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::ops::Range;
 use std::rc::Rc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::TransitionSystem;
 use crate::energy::{EnergyConf, UpdateArray};
@@ -127,6 +127,29 @@ impl GameBuild {
                 if self.lts.compare_enabled(p, q) == (true, true) {
                     self.new_node(Position::attack(p, vec![q]));
                 }
+            }
+        }
+        let n_starting_points = self.game.adj.len() as u32;
+        self.build_internal((0 .. n_starting_points).collect());
+        n_starting_points
+    }
+
+    pub fn compare_all_but_bisimilar(&mut self) -> u32 {
+        // Compute bisimulation
+        let partition = self.lts.signature_refinement();
+        // Pick one representative for each bisimulation equivalence class
+        let mut represented = FxHashSet::default();
+        let mut representatives = Vec::new();
+        for (proc, part) in partition.iter().enumerate() {
+            if !represented.contains(part) {
+                representatives.push(proc as u32);
+                represented.insert(part);
+            }
+        }
+        // Compare all representatives with each other
+        for (i, &p) in representatives.iter().enumerate() {
+            for &q in &representatives[..i] {
+                self.new_node(Position::attack(p, vec![q]));
             }
         }
         let n_starting_points = self.game.adj.len() as u32;
