@@ -11,17 +11,20 @@ var<storage> node_offsets: array<NodeOffset>;
 var<storage> successor_offsets: array<u32>;
 
 @group(0) @binding(3)
-var<storage, read_write> minima: array<u32>;
+var<storage, read_write> changed: array<u32>;
 
 @group(0) @binding(4)
 var<uniform> work_size: u32;
 
 
 @group(1) @binding(0)
-var<storage> graph_row_offsets: array<u32>;
+var<storage, read_write> minima: array<u32>;
 
-@group(1) @binding(1)
-var<storage> graph_weights: array<Update>;
+
+// Temporary buffer to hold the output flags as u32. This is later condensed
+// into bit-packed u32's in the minima storage buffer.
+var<workgroup> minima_buf: array<u32,64u>;
+
 
 struct NodeOffset {
     node: u32,
@@ -29,10 +32,6 @@ struct NodeOffset {
     offset: u32,
 }
 
-
-// Temporary buffer to hold the output flags as u32. This is later condensed
-// into bit-packed u32's in the minima storage buffer.
-var<workgroup> minima_buf: array<u32,64u>;
 
 fn less_eq(a: Energy, b: Energy) -> bool {
     $IMPL_LESS_EQ;
@@ -42,24 +41,6 @@ fn energy_eq(a: Energy, b: Energy) -> bool {
     $IMPL_EQ;
 }
 
-// Apply the update to e backwards
-fn inv_update(e: Energy, u: Update) -> Energy {
-    // Expand bit fields into full u32's
-    var energy = $UNPACK_ENERGY;
-    let updates = $UNPACK_UPDATE;
-
-    // Apply 1-updates first
-$UPDATE1
-
-    // Look for min-updates
-    // 0u means no update, 1 means 1-update, everything else represents
-    // the second component in the min-operation, the first being the
-    // current position i. To make place for the 2 special values, 2
-    // must be subtracted here.
-    $UPDATE_MIN
-
-    return $PACK_ENERGY;
-}
 
 fn binsearch(i: u32) -> u32 {
     let last = work_size - 1u;
@@ -72,39 +53,6 @@ fn binsearch(i: u32) -> u32 {
                     node_offsets[l + stride].offset <= i);
     }
     return l - 1u;
-}
-
-
-@compute
-@workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) g_id: vec3<u32>) {
-    let i = g_id.x;
-    if i >= node_offsets[work_size - 1u].offset {
-        return;
-    }
-
-    let start_node_idx = binsearch(i);
-    let node = node_offsets[start_node_idx];
-    let start_node = node.node;
-
-    // Update energies
-    var update = array<u32, $UPDATE_SIZE>();
-    // Search for successor to use
-    for (var suc = node.successor_offsets_idx;
-         // Stop before last entry, which correspond to the node's own energies.
-         // `update` is left at 0 in that case.
-         suc < (node_offsets[start_node_idx + 1u].successor_offsets_idx - 1u);
-         suc++)
-    {
-        if i >= successor_offsets[suc] && i < successor_offsets[suc + 1u] {
-            // Index of successor in adjacency list as well as weight array
-            let successor_idx = suc - node.successor_offsets_idx;
-            update = graph_weights[graph_row_offsets[start_node] + successor_idx];
-            break;
-        }
-    }
-
-    energies[i] = inv_update(energies[i], update);
 }
 
 @compute
@@ -137,6 +85,15 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
             break;
         }
     }
+
+    let own_energies_offs = node_offsets[start_node_idx + 1u].successor_offsets_idx - 1u;
+    let own_energies = successor_offsets[own_energies_offs];
+    if i < own_energies && is_minimal != 0u {
+        // There is a minimal energy that was not previously part of this
+        // node's energies.
+        changed[start_node_idx] = 1u;
+    }
+
     minima_buf[l_idx] = is_minimal;
 
     workgroupBarrier();

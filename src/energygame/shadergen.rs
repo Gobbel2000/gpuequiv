@@ -188,9 +188,14 @@ pub(super) fn make_replacements(conf: EnergyConf) -> ShaderPreproc<'static> {
     preproc
 }
 
-pub(super) fn build_attack(preproc: &ShaderPreproc) -> ShaderSource<'static> {
-    let shader_in = include_str!("attack.wgsl");
-    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "attack"))
+pub(super) fn build_attack_update(preproc: &ShaderPreproc) -> ShaderSource<'static> {
+    let shader_in = include_str!("attack_update.wgsl");
+    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "attack_update"))
+}
+
+pub(super) fn build_attack_minimize(preproc: &ShaderPreproc) -> ShaderSource<'static> {
+    let shader_in = include_str!("attack_minimize.wgsl");
+    ShaderSource::Wgsl(preproc.preprocess_dump(shader_in, "attack_minimize"))
 }
 
 pub(super) fn build_defend_update(preproc: &ShaderPreproc) -> ShaderSource<'static> {

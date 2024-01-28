@@ -23,7 +23,7 @@ use crate::error::*;
 use crate::energy::*;
 use gpuutils::{GPUCommon, bgl_entry, buffer_fits};
 use shadergen::{ShaderPreproc, make_replacements,
-    build_attack, build_defend_update, build_defend_iterative};
+    build_attack_update, build_attack_minimize, build_defend_update, build_defend_iterative};
 
 // Spawn 64 threads with each workgroup invocation
 const WORKGROUP_SIZE: u32 = 64;
@@ -366,7 +366,7 @@ unsafe impl bytemuck::Pod for NodeOffsetAtk {}
 
 // More data is needed for defence shaders to also include offsets in the list of combinations
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct NodeOffsetDef {
     node: u32,
     successor_offsets_idx: u32,
@@ -381,12 +381,6 @@ unsafe impl bytemuck::Pod for NodeOffsetDef {}
 
 trait PlayerShader {
     fn name() -> &'static str;
-
-    // Number of bytes needed to store `n` bitflags.
-    // Rounded up to the next multiple of 8 (64 bits).
-    fn minima_size(n: usize) -> u64 {
-        (((n as i64 - 1) / 64 + 1) * 8) as u64
-    }
 
     // Construct buffer for energies
     fn get_energies_buf(device: &Device, energies: &EnergyArray) -> Buffer {
@@ -638,6 +632,24 @@ impl DefendIterShader {
         }
     }
 
+    #[inline]
+    fn energies_size(&self) -> u64 {
+        (self.energies.view().len() * mem::size_of::<u32>()) as u64
+    }
+    #[inline]
+    fn node_offsets_size(&self) -> u64 {
+        (self.node_offsets.len() * mem::size_of::<NodeOffsetDef>()) as u64
+    }
+    #[inline]
+    fn sup_size(&self) -> u64 {
+        let n_sup: u64 = self.node_offsets.last().map(|n| n.sup_offset.into()).unwrap_or_default();
+        n_sup * u64::from(self.energies.get_conf().energy_size()) * mem::size_of::<u32>() as u64
+    }
+    #[inline]
+    fn status_size(&self) -> u64 {
+        ((self.node_offsets.len() - 1) * mem::size_of::<i32>()) as u64
+    }
+
     fn update(&mut self,
         node_offsets: Vec<NodeOffsetDef>,
         successor_offsets: Vec<u32>,
@@ -647,23 +659,23 @@ impl DefendIterShader {
         let queue = &self.gpu.queue;
 
         queue.write_buffer(&self.work_size_buf, 0, bytemuck::bytes_of(&(node_offsets.len() as u32)));
-        if energies.view().len() * mem::size_of::<u32>() > self.energies_buf.size() as usize {
-            self.energies_buf = Self::get_energies_buf(device, &energies);
-        } else {
-            queue.write_buffer(&self.energies_buf, 0, energies.data());
-        }
         self.energies = energies;
+        if self.energies_size() > self.energies_buf.size() {
+            self.energies_buf = Self::get_energies_buf(device, &self.energies);
+        } else {
+            queue.write_buffer(&self.energies_buf, 0, self.energies.data());
+        }
 
-        if (node_offsets.len() * mem::size_of::<NodeOffsetDef>()) as u64 > self.node_offsets_buf.size() {
+        self.node_offsets = node_offsets;
+        if self.node_offsets_size() > self.node_offsets_buf.size() {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Defend Iterative node offsets storage buffer"),
-                contents: bytemuck::cast_slice(&node_offsets),
+                contents: bytemuck::cast_slice(&self.node_offsets),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
         } else {
-            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&node_offsets));
+            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
         }
-        self.node_offsets = node_offsets;
 
         if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
             self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
@@ -671,18 +683,16 @@ impl DefendIterShader {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
         }
 
-        let sup_size: u64 = self.node_offsets.last().expect("Even if visit list is empty, node offsets has one entry")
-            .sup_offset.into();
-        let sup_bytes = sup_size * u64::from(self.energies.get_conf().energy_size()) * mem::size_of::<u32>() as u64;
-        if sup_bytes > self.sup_buf.size() {
+        let sup_size = self.sup_size();
+        if sup_size > self.sup_buf.size() {
             (self.sup_buf, self.sup_staging_buf) = Self::new_output_buf(
-                device, sup_bytes, Some("Suprema"));
+                device, sup_size, Some("Suprema"));
         }
 
-        let status_bytes = ((self.node_offsets.len() - 1) * mem::size_of::<i32>()) as u64;
-        if status_bytes > self.status_buf.size() {
+        let status_size = self.status_size();
+        if status_size > self.status_buf.size() {
             (self.status_buf, self.status_staging_buf) = Self::new_output_buf(
-                device, status_bytes, Some("Intersection status"));
+                device, status_size, Some("Intersection status"));
         }
 
         self.input_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -802,7 +812,7 @@ impl DefendIterShader {
     fn compute_pass(&self, encoder: &mut wgpu::CommandEncoder, graph_bind_group: &wgpu::BindGroup) {
         { // Compute pass for updating energies
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend Iterative energy update compute pass"),
+                label: Some("Defend Iterative compute pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(&self.update_pipeline);
@@ -812,30 +822,29 @@ impl DefendIterShader {
             let n_energies = self.node_offsets.last().map(|n| n.energy_offset).unwrap_or_default();
             let update_workgroup_count = n_energies.div_ceil(WORKGROUP_SIZE);
             cpass.dispatch_workgroups(update_workgroup_count, 1, 1);
-        }
-        { // Compute pass for taking suprema of combinations
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Defend Iterative suprema of combinations compute pass"),
-                timestamp_writes: None,
-            });
+
+            // Minima of suprema shader
             cpass.set_pipeline(&self.combine_pipeline);
-            cpass.set_bind_group(0, &self.input_bind_group, &[]);
             cpass.set_bind_group(1, &self.suprema_bind_group, &[]);
             // One workgroup for each node
             cpass.dispatch_workgroups(self.node_offsets.len().max(1) as u32 - 1, 1, 1);
         }
         // Copy output to staging buffer
         encoder.copy_buffer_to_buffer(
-            &self.status_buf, 0, &self.status_staging_buf, 0, self.status_buf.size());
+            &self.status_buf, 0, &self.status_staging_buf, 0, self.status_size());
         encoder.copy_buffer_to_buffer(
-            &self.sup_buf, 0, &self.sup_staging_buf, 0, self.sup_buf.size());
+            &self.sup_buf, 0, &self.sup_staging_buf, 0, self.sup_size());
     }
 
     const MAPPED_BUFS: usize = 2;
 
-    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) {
-        let status_buffer_slice = self.status_staging_buf.slice(..);
-        let sup_buffer_slice = self.sup_staging_buf.slice(..);
+    // Returns the number of buffers that were actually mapped
+    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) -> usize {
+        if self.node_offsets.len() <= 1 {
+            return 0;
+        }
+        let status_buffer_slice = self.status_staging_buf.slice(.. self.status_size());
+        let sup_buffer_slice = self.sup_staging_buf.slice(.. self.sup_size());
         let sender0 = sender.clone();
         status_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
             sender0.try_send(v).expect("Channel should be writable");
@@ -844,17 +853,21 @@ impl DefendIterShader {
         sup_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
             sender1.try_send(v).expect("Channel should be writable");
         });
+        Self::MAPPED_BUFS
     }
 
     fn process_results(&mut self, game: &mut EnergyGame) -> Vec<u32> {
-        let status_data = self.status_staging_buf.slice(..).get_mapped_range();
+        if self.node_offsets.len() <= 1 {
+            return Vec::new();
+        }
+        let status_data = self.status_staging_buf.slice(.. self.status_size()).get_mapped_range();
         let status: &[i32] = bytemuck::cast_slice(&status_data);
 
-        let sup_data = self.sup_staging_buf.slice(..).get_mapped_range();
-        let sup_vec: Vec<u32> = bytemuck::cast_slice(&sup_data).to_vec();
+        let sup_data = self.sup_staging_buf.slice(.. self.sup_size()).get_mapped_range();
+        let sup_slice: &[u32] = bytemuck::cast_slice(&sup_data);
         let energy_size = game.graph.get_conf().energy_size() as usize;
-        let n_sup = sup_vec.len() / energy_size;
-        let sup_array = ArrayView2::from_shape((n_sup, energy_size), &sup_vec)
+        let n_sup = sup_slice.len() / energy_size;
+        let sup_array = ArrayView2::from_shape((n_sup, energy_size), sup_slice)
             .expect("Suprema array has invalid shape");
 
         if log_enabled!(Trace) {
@@ -894,6 +907,10 @@ impl DefendIterShader {
     }
 }
 
+
+// Type used to store bit-packed minima flags for CPU.
+type MinFlags = u64;
+
 struct AttackShader {
     gpu: Rc<GPUCommon>,
     visit_list: FxHashSet<u32>,
@@ -905,11 +922,16 @@ struct AttackShader {
     successor_offsets_buf: Buffer,
     minima_buf: Buffer,
     minima_staging_buf: Buffer,
+    changed_buf: Buffer,
+    changed_staging_buf: Buffer,
     work_size_buf: Buffer,
 
-    bind_group: wgpu::BindGroup,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
+    input_bind_group: wgpu::BindGroup,
+    input_bind_group_layout: wgpu::BindGroupLayout,
+    update_pipeline: wgpu::ComputePipeline,
+
+    minima_bind_group: wgpu::BindGroup,
+    minima_bind_group_layout: wgpu::BindGroupLayout,
     minima_pipeline: wgpu::ComputePipeline,
 }
 
@@ -954,6 +976,9 @@ impl AttackShader {
         let (minima_buf, minima_staging_buf) = Self::new_output_buf(
             &gpu.device, INITIAL_CAPACITY, Some("Minima flags"));
 
+        let (changed_buf, changed_staging_buf) = Self::new_output_buf(
+            &gpu.device, INITIAL_CAPACITY, Some("Energies changed flags"));
+
         let work_size_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Attack work size uniform buffer"),
             size: mem::size_of::<u32>() as u64,
@@ -961,13 +986,13 @@ impl AttackShader {
             mapped_at_creation: false,
         });
 
-        let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Attack energy bind group layout"),
+        let input_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Attack input bind group layout"),
             entries: &[
                 bgl_entry(0, false), // energies, writable
                 bgl_entry(1, true),  // node offsets
                 bgl_entry(2, true),  // successor offsets
-                bgl_entry(3, false), // minima, writable
+                bgl_entry(3, false), // changed, writable
                 // work_size, uniform
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
@@ -981,9 +1006,9 @@ impl AttackShader {
                 },
             ],
         });
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("{} bind group", Self::name())),
-            layout: &bind_group_layout,
+        let input_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Attack input bind group"),
+            layout: &input_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -999,7 +1024,7 @@ impl AttackShader {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: minima_buf.as_entire_binding(),
+                    resource: changed_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1008,25 +1033,53 @@ impl AttackShader {
             ],
         });
 
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Attack shader module"),
-            source: build_attack(preprocessor),
+        let minima_bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Attack minima bind group layout"),
+            entries: &[
+                bgl_entry(0, false), // minima, writable
+            ],
         });
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Attack pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout, &graph_bind_group_layout],
+
+        let minima_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Attack minima bind group"),
+            layout: &minima_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: minima_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let update_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Attack update shader module"),
+            source: build_attack_update(preprocessor),
+        });
+        let update_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Attack update pipeline layout"),
+            bind_group_layouts: &[&input_bind_group_layout, &graph_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Attack compute pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
+        let update_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Attack update compute pipeline"),
+            layout: Some(&update_pipeline_layout),
+            module: &update_shader,
+            entry_point: "update",
+        });
+
+        let minima_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Attack minimize shader module"),
+            source: build_attack_minimize(preprocessor),
+        });
+        let minima_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Attack minimize pipeline layout"),
+            bind_group_layouts: &[&input_bind_group_layout, &minima_bind_group_layout],
+            push_constant_ranges: &[],
         });
         let minima_pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Attack minima pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
+            layout: Some(&minima_pipeline_layout),
+            module: &minima_shader,
             entry_point: "minimize",
         });
 
@@ -1041,13 +1094,37 @@ impl AttackShader {
             successor_offsets_buf,
             minima_buf,
             minima_staging_buf,
+            changed_buf,
+            changed_staging_buf,
             work_size_buf,
 
-            bind_group,
-            bind_group_layout,
-            pipeline,
+            input_bind_group,
+            input_bind_group_layout,
+            update_pipeline,
+
+            minima_bind_group,
+            minima_bind_group_layout,
             minima_pipeline,
         }
+    }
+
+    #[inline]
+    fn energies_size(&self) -> u64 {
+        (self.energies.view().len() * mem::size_of::<u32>()) as u64
+    }
+    #[inline]
+    fn node_offsets_size(&self) -> u64 {
+        (self.node_offsets.len() * mem::size_of::<NodeOffsetAtk>()) as u64
+    }
+    #[inline]
+    fn minima_size(&self) -> u64 {
+        const BITS: i64 = MinFlags::BITS as i64;
+        let n = self.node_offsets.last().map(|n| n.offset).unwrap_or_default();
+        (((n as i64 - 1) / BITS + 1) * BITS / 8) as u64
+    }
+    #[inline]
+    fn changed_size(&self) -> u64 {
+        ((self.node_offsets.len() - 1) * mem::size_of::<u32>()) as u64
     }
 
     fn update(&mut self,
@@ -1059,29 +1136,29 @@ impl AttackShader {
         let queue = &self.gpu.queue;
 
         queue.write_buffer(&self.work_size_buf, 0, bytemuck::bytes_of(&(node_offsets.len() as u32)));
-        if (energies.view().len() * mem::size_of::<u32>()) as u64 > self.energies_buf.size() {
-            self.energies_buf = Self::get_energies_buf(device, &energies);
+        self.energies = energies;
+        if self.energies_size() > self.energies_buf.size() {
+            self.energies_buf = Self::get_energies_buf(device, &self.energies);
             self.energies_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&format!("{} Energies staging buffer", Self::name())),
+                label: Some("Attack Energies staging buffer"),
                 size: self.energies_buf.size(),
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
         } else {
-            queue.write_buffer(&self.energies_buf, 0, energies.data());
+            queue.write_buffer(&self.energies_buf, 0, self.energies.data());
         }
-        self.energies = energies;
 
-        if (node_offsets.len() * mem::size_of::<NodeOffsetAtk>()) as u64 > self.node_offsets_buf.size() {
+        self.node_offsets = node_offsets;
+        if self.node_offsets_size() > self.node_offsets_buf.size() {
             self.node_offsets_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("{} Node offsets storage buffer", Self::name())),
-                contents: bytemuck::cast_slice(&node_offsets),
+                contents: bytemuck::cast_slice(&self.node_offsets),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
         } else {
-            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&node_offsets));
+            queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
         }
-        self.node_offsets = node_offsets;
 
         if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
             self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
@@ -1089,15 +1166,21 @@ impl AttackShader {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
         }
 
-        let minima_capacity = Self::minima_size(self.energies.n_energies());
-        if minima_capacity > self.minima_buf.size() {
+        let minima_size = self.minima_size();
+        if minima_size > self.minima_buf.size() {
             (self.minima_buf, self.minima_staging_buf) = Self::new_output_buf(
-                device, minima_capacity, Some("Minima flags"));
+                device, minima_size, Some("Minima flags"));
         }
 
-        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("{} Main shader bind group", Self::name())),
-            layout: &self.bind_group_layout,
+        let changed_size = self.changed_size();
+        if changed_size > self.changed_buf.size() {
+            (self.changed_buf, self.changed_staging_buf) = Self::new_output_buf(
+                device, changed_size, Some("Energies changed flags"));
+        }
+
+        self.input_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Attack input shader bind group"),
+            layout: &self.input_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1113,11 +1196,21 @@ impl AttackShader {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.minima_buf.as_entire_binding(),
+                    resource: self.changed_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: self.work_size_buf.as_entire_binding(),
+                },
+            ],
+        });
+        self.minima_bind_group =  device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Attack minima bind group"),
+            layout: &self.minima_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.minima_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1195,26 +1288,33 @@ impl AttackShader {
                 label: Some("Attack Compute Pass"),
                 timestamp_writes: None,
             });
-            cpass.set_pipeline(&self.pipeline);
-            cpass.set_bind_group(0, &self.bind_group, &[]);
+            cpass.set_pipeline(&self.update_pipeline);
+            cpass.set_bind_group(0, &self.input_bind_group, &[]);
             cpass.set_bind_group(1, graph_bind_group, &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
 
             cpass.set_pipeline(&self.minima_pipeline);
+            cpass.set_bind_group(1, &self.minima_bind_group, &[]);
             cpass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         // Copy output to staging buffer
         encoder.copy_buffer_to_buffer(
-            &self.minima_buf, 0, &self.minima_staging_buf, 0, self.minima_buf.size());
+            &self.minima_buf, 0, &self.minima_staging_buf, 0, self.minima_size());
         encoder.copy_buffer_to_buffer(
-            &self.energies_buf, 0, &self.energies_staging_buf, 0, self.energies_buf.size());
+            &self.energies_buf, 0, &self.energies_staging_buf, 0, self.energies_size());
+        encoder.copy_buffer_to_buffer(
+            &self.changed_buf, 0, &self.changed_staging_buf, 0, self.changed_size());
     }
 
-    const MAPPED_BUFS: usize = 2;
+    const MAPPED_BUFS: usize = 3;
 
-    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) {
-        let minima_buffer_slice = self.minima_staging_buf.slice(..);
-        let energies_buffer_slice = self.energies_staging_buf.slice(..);
+    fn map_buffers(&self, sender: &Sender<result::Result<(), wgpu::BufferAsyncError>>) -> usize {
+        if self.node_offsets.len() <= 1 {
+            return 0;
+        }
+        let minima_buffer_slice = self.minima_staging_buf.slice(.. self.minima_size());
+        let energies_buffer_slice = self.energies_staging_buf.slice(.. self.energies_size());
+        let changed_buffer_slice = self.changed_staging_buf.slice(.. self.changed_size());
         let sender0 = sender.clone();
         minima_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
             sender0.try_send(v).expect("Channel should be writable");
@@ -1223,19 +1323,29 @@ impl AttackShader {
         energies_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
             sender1.try_send(v).expect("Channel should be writable");
         });
+        let sender2 = sender.clone();
+        changed_buffer_slice.map_async(wgpu::MapMode::Read, move |v| {
+            sender2.try_send(v).expect("Channel should be writable");
+        });
+        Self::MAPPED_BUFS
     }
 
     fn process_results(&mut self, game: &mut EnergyGame) -> Vec<u32> {
-        let minima_data = self.minima_staging_buf.slice(..).get_mapped_range();
-        let minima: &[u64] = bytemuck::cast_slice(&minima_data);
+        if self.node_offsets.len() <= 1 {
+            return Vec::new();
+        }
+        let minima_data = self.minima_staging_buf.slice(.. self.minima_size()).get_mapped_range();
+        let minima: &[MinFlags] = bytemuck::cast_slice(&minima_data);
 
-        let energies_data = self.energies_staging_buf.slice(..).get_mapped_range();
-        let energies_vec: Vec<u32> = bytemuck::cast_slice(&energies_data).to_vec();
+        let changed_data = self.changed_staging_buf.slice(.. self.changed_size()).get_mapped_range();
+        let changed: &[u32] = bytemuck::cast_slice(&changed_data);
+
+        let energies_data = self.energies_staging_buf.slice(.. self.energies_size()).get_mapped_range();
+        let energies_slice: &[u32] = bytemuck::cast_slice(&energies_data);
         let energy_size = game.graph.conf.energy_size() as usize;
-        let n_energies = energies_vec.len() / energy_size;
-        let energies_array = Array2::from_shape_vec((n_energies, energy_size), energies_vec)
+        let n_energies = energies_slice.len() / energy_size;
+        let energies_array = ArrayView2::from_shape((n_energies, energy_size), energies_slice)
             .expect("Energy array has invalid shape");
-        let energies = EnergyArray::from_array(energies_array, game.graph.get_conf());
 
         if log_enabled!(Trace) {
             let mut msg = "Attack Minima:    ".to_string();
@@ -1243,49 +1353,27 @@ impl AttackShader {
                 msg.push_str(&format!("{:064b} ", minima_chunk.reverse_bits()));
             }
             trace!("{}", msg);
+            let energies = EnergyArray::from_array(energies_array.to_owned(), game.graph.get_conf());
             trace!("Attack Energies:\n{}", energies);
         }
 
-        const MINIMA_SIZE: u32 = u64::BITS;
-
         let mut changed_nodes = Vec::new();
-        for node_window in self.node_offsets.windows(2) {
+        debug_assert!((self.node_offsets.len() - 1) <= changed.len(),
+            "There should be a `changed` flag for every processed node");
+        for (node_window, _) in self.node_offsets.windows(2)
+            .zip(changed)
+            .filter(|(_, &changed)| changed != 0)
+        {
             let cur = node_window[0];
-            let next_offset = node_window[1].offset;
-            let width = next_offset - cur.offset;
-            let n_prev = game.energies[cur.node as usize].n_energies() as u32;
-            let n_new = width - n_prev;
-            debug_assert!(n_prev <= width);
+            let next_offset = node_window[1].offset as usize;
+            let indices: Vec<usize> = (cur.offset as usize..next_offset)
+                .filter(|i| minima[i / MinFlags::BITS as usize] & (1 << (i % MinFlags::BITS as usize)) != 0)
+                .collect();
 
-            let mut changed = false;
-            // If energies didn't change, all newly compared energies will be filtered out
-            if n_new > 0 {
-                for minima_idx in (cur.offset / MINIMA_SIZE) ..= ((cur.offset + n_new - 1) / MINIMA_SIZE) {
-                    // What position in the minima u64 the node starts at
-                    let shift_start = cur.offset.max(minima_idx * MINIMA_SIZE) % MINIMA_SIZE;
-                    // ... and ends at
-                    let pad_right = (cur.offset + n_new - 1).min((minima_idx + 1) * MINIMA_SIZE - 1) % MINIMA_SIZE;
-                    let shift_end = MINIMA_SIZE - 1 - pad_right;
-                    let mask = (u64::MAX << (shift_start + shift_end)) >> shift_end;
-
-                    let minima_chunk = minima[minima_idx as usize];
-                    if minima_chunk & mask != 0 {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-
-            if changed {
-                let indices: Vec<usize> = (cur.offset as usize..next_offset as usize)
-                    .filter(|i| minima[i / MINIMA_SIZE as usize] & (1 << (i % MINIMA_SIZE as usize)) != 0)
-                    .collect();
-
-                // Write new, filtered energies
-                let new_array = energies.view().select(Axis(0), indices.as_slice());
-                game.energies[cur.node as usize] = EnergyArray::from_array(new_array, game.graph.get_conf());
-                changed_nodes.push(cur.node);
-            }
+            // Write new, filtered energies
+            let new_array = energies_array.select(Axis(0), indices.as_slice());
+            game.energies[cur.node as usize] = EnergyArray::from_array(new_array, game.graph.get_conf());
+            changed_nodes.push(cur.node);
         }
 
         // Unmap buffers
@@ -1293,6 +1381,8 @@ impl AttackShader {
         self.minima_staging_buf.unmap();
         drop(energies_data);
         self.energies_staging_buf.unmap();
+        drop(changed_data);
+        self.changed_staging_buf.unmap();
         changed_nodes
     }
 }
@@ -1368,13 +1458,13 @@ impl<'a> GPURunner<'a> {
 
             const MAPS: usize = AttackShader::MAPPED_BUFS + DefendIterShader::MAPPED_BUFS;
             let (sender, receiver) = channel(MAPS);
-            self.atk_shader.map_buffers(&sender);
-            self.defiter_shader.map_buffers(&sender);
+            let wait_for = self.atk_shader.map_buffers(&sender) + 
+                self.defiter_shader.map_buffers(&sender);
 
             // Wait for the GPU to finish work
             self.gpu.device.poll(wgpu::Maintain::Wait);
 
-            for _ in 0..MAPS {
+            for _ in 0..wait_for {
                 receiver.receive().await.expect("Channel should not be closed")?;
             }
 
