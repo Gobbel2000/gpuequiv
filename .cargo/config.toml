@@ -1,5 +1,6 @@
 [alias]
-run-wasm = ["run", "--release", "--package", "run-wasm", "--", "--bin", "reachability"]
+run-wasm = ["run", "--release", "--package", "run-wasm", "--", "--example", "energygame"]
+run-csv = ["run", "--example", "run-csv"]
 
 [build]
 rustflags = [

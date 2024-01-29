@@ -32,11 +32,11 @@ const WORKGROUP_SIZE: u32 = 64;
 const INITIAL_CAPACITY: u64 = 64;
 
 #[derive(Serialize, Deserialize)]
-struct SerdeGameGraph {
-    conf: EnergyConf,
-    adj: Vec<Vec<u32>>,
-    weights: Vec<Vec<Vec<i32>>>,
-    attacker_pos: Vec<bool>,
+pub struct SerdeGameGraph {
+    pub conf: EnergyConf,
+    pub adj: Vec<Vec<u32>>,
+    pub weights: Vec<Vec<Vec<i32>>>,
+    pub attacker_pos: Vec<bool>,
 }
 
 impl From<GameGraph> for SerdeGameGraph {

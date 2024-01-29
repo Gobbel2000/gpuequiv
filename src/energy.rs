@@ -298,7 +298,9 @@ impl EnergyArray {
     /// If associated to an attacker game position `(p, {q})`,
     /// this function gives insight into the equivalences between processes `p` and `q`.
     ///
-    /// **Panics:** If `self` and `equivalence` do not have the same EnergyConfiguration.
+    /// # Panics
+    ///
+    /// If `self` and `equivalence` do not have the same EnergyConfiguration.
     pub fn test_equivalence(&self, equivalence: &Energy) -> bool {
         if self.conf != equivalence.conf {
             panic!("Incompatible Energy configurations");
