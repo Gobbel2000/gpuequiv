@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
-use regex::{Regex, Captures};
+use regex_lite::{Regex, Captures};
 use rustc_hash::FxHashMap;
 use wgpu::ShaderSource;
 

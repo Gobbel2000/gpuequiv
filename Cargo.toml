@@ -12,7 +12,7 @@ log = "0.4"
 bytemuck = "1.14"
 futures-intrusive = "0.5"
 ndarray = "0.15"
-regex = "1.10"
+regex-lite = "0.1.5"
 # For faster hashsets and hashmaps
 rustc-hash = "1.1"
 
