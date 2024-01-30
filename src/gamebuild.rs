@@ -1,12 +1,13 @@
 pub mod gamepos;
 
 use std::cmp::Ordering;
+use std::ops::Deref;
 use std::rc::Rc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use ndarray::Axis;
 
-use crate::TransitionSystem;
+use crate::{TransitionSystem, StartInfo};
 use crate::energy::{EnergyConf, UpdateArray};
 use crate::energygame::GameGraph;
 
@@ -92,47 +93,61 @@ impl TransitionSystem {
 }
 
 
+#[derive(Clone, Debug)]
 pub struct GameBuild {
-    pub lts: TransitionSystem,
     pub game: GameGraph,
     pub nodes: Vec<Rc<Position>>,
     pub node_map: FxHashMap<Rc<Position>, u32>,
+    pub n_starting_points: usize,
 }
 
 impl GameBuild {
     const ENERGY_CONF: EnergyConf = EnergyConf::STANDARD;
 
-    pub fn with_lts(lts: TransitionSystem) -> Self {
+    pub fn new() -> Self {
         GameBuild {
-            lts,
             game: GameGraph::empty(Self::ENERGY_CONF),
             nodes: Vec::new(),
             node_map: FxHashMap::default(),
+            n_starting_points: 0,
         }
     }
 
-    pub fn compare(&mut self, p: u32, q: u32) {
-        self.new_node(Position::attack(p, vec![q]));
-        self.build_internal();
+    pub fn compare(lts: &TransitionSystem, p: u32, q: u32) -> Self {
+        let mut builder = Self::default();
+        builder.new_node(Position::attack(p, vec![q]));
+        builder.build_internal(lts);
+        builder
     }
 
-    pub fn compare_all(&mut self) -> u32 {
-        for p in 0..self.lts.n_vertices() {
-            for q in 0..p {
+    pub fn compare_multiple(lts: &TransitionSystem, comparisons: &[(u32, u32)]) -> Self {
+        let mut builder = Self::default();
+        for (p, q) in comparisons {
+            builder.new_node(Position::attack(*p, vec![*q]));
+        }
+        builder.build_internal(lts);
+        builder
+    }
+
+    pub fn compare_all(lts: &TransitionSystem, include_symmetric: bool) -> (Self, StartInfo) {
+        let mut builder = Self::default();
+        for p in 0..lts.n_vertices() {
+            let end = if include_symmetric { lts.n_vertices() } else { p };
+            for q in 0..end {
                 // Only compare if p and q have the same enabled actions
-                if self.lts.compare_enabled(p, q) == (true, true) {
-                    self.new_node(Position::attack(p, vec![q]));
+                if p != q && lts.compare_enabled(p, q) == (true, true) {
+                    builder.new_node(Position::attack(p, vec![q]));
                 }
             }
         }
-        let n_starting_points = self.game.n_vertices();
-        self.build_internal();
-        n_starting_points
+        builder.build_internal(lts);
+        let start_info = StartInfo::new(builder.starting_points(), lts.n_vertices() as usize);
+        (builder, start_info)
     }
 
-    pub fn compare_all_but_bisimilar(&mut self) -> u32 {
+    pub fn compare_all_but_bisimilar(lts: &TransitionSystem, include_symmetric: bool) -> (Self, StartInfo) {
         // Compute bisimulation
-        let partition = self.lts.signature_refinement();
+        let partition = lts.signature_refinement();
         // Pick one representative for each bisimulation equivalence class
         let mut represented = FxHashSet::default();
         let mut representatives = Vec::new();
@@ -143,20 +158,41 @@ impl GameBuild {
             }
         }
         // Compare all representatives with each other
+        let mut builder = Self::default();
         for (i, &p) in representatives.iter().enumerate() {
-            for &q in &representatives[..i] {
-                self.new_node(Position::attack(p, vec![q]));
+            let slice = if include_symmetric { &representatives } else { &representatives[..i] };
+            for &q in slice {
+                // Only compare if p and q have the same enabled actions
+                if p != q && lts.compare_enabled(p, q) == (true, true) {
+                    builder.new_node(Position::attack(p, vec![q]));
+                }
             }
         }
-        let n_starting_points = self.game.n_vertices();
-        self.build_internal();
-        n_starting_points
+        builder.build_internal(lts);
+        let start_info = StartInfo::from_partition(builder.starting_points(), &partition);
+        (builder, start_info)
     }
 
-    fn build_internal(&mut self) {
+    pub fn starting_points(&self) -> Vec<AttackPosition> {
+        self.nodes.iter()
+            .take(self.n_starting_points)
+            .filter_map(|pos| match Deref::deref(pos) {
+                // Normally all starting positions should be attack positions
+                Position::Attack(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn take_game(&mut self) -> GameGraph {
+        std::mem::replace(&mut self.game, GameGraph::empty(Self::ENERGY_CONF))
+    }
+
+    fn build_internal(&mut self, lts: &TransitionSystem) {
+        self.n_starting_points = self.game.n_vertices() as usize;
         let mut idx = 0;
         while idx < self.game.n_vertices() {
-            let (positions, weights) = self.nodes[idx as usize].successors(&self.lts);
+            let (positions, weights) = self.nodes[idx as usize].successors(lts);
             self.add_nodes(positions, weights);
             idx += 1;
         }
@@ -188,5 +224,11 @@ impl GameBuild {
         self.nodes.push(Rc::clone(&pos_rc));
         self.node_map.insert(Rc::clone(&pos_rc), idx);
         idx
+    }
+}
+
+impl Default for GameBuild {
+    fn default() -> Self {
+        GameBuild::new()
     }
 }

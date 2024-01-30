@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::env;
 use std::io;
-use std::ops::Deref;
+use std::time::Instant;
 
 use gpuequiv::*;
 use gpuequiv::energygame::*;
@@ -9,50 +9,34 @@ use gpuequiv::gamebuild::*;
 
 async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let lts = TransitionSystem::from_csv_file(fname)?;
-    let mut builder = GameBuild::with_lts(lts);
-    let n_starting_points = builder.compare_all_but_bisimilar();
-    println!("Game built");
+
+    let now = Instant::now();
+    let (builder, start_info) = GameBuild::compare_all_but_bisimilar(&lts, true);
+    println!("Game built in {:.5}s", now.elapsed().as_secs_f64());
+
     println!("Number of nodes: {}", builder.game.n_vertices());
     println!("Number of edges: {}", builder.game.column_indices.len());
-    let nodes = builder.nodes;
+
+    // Create EnergyGame from built game graph
     let mut energy_game = EnergyGame::standard_reach(builder.game);
+
+    // Solve energy game on GPU
     println!("Running game...");
-    let energies = energy_game.run().await.unwrap();
-    println!("Energy game finished");
+    let now = Instant::now();
+    energy_game.run().await.unwrap();
+    println!("Ran energy game in {:.5}s", now.elapsed().as_secs_f64());
 
-    let mut equivalence_classes: Vec<Vec<u32>> = Vec::new();
-    for (comp, e) in nodes[..n_starting_points as usize].iter().zip(energies) {
-        let pos = match Deref::deref(comp) {
-            Position::Attack(pos) => pos,
-            _ => unreachable!(),
-        };
-        let class_p = match equivalence_classes.iter().position(|c| c.contains(&pos.p)) {
-            Some(idx) => idx,
-            None => {
-                equivalence_classes.push(vec![pos.p]);
-                equivalence_classes.len() - 1
-            },
-        };
-        let q = pos.q[0];
-        let class_q = equivalence_classes.iter().position(|c| c.contains(&q));
-        if e.test_equivalence(std_equivalences::bisimulation()) {
-            if let Some(cq) = class_q {
-                if class_p != cq {
-                    let removed = equivalence_classes.remove(class_p.max(cq));
-                    equivalence_classes[class_p.min(cq)].extend(removed);
-                }
-            } else {
-                equivalence_classes[class_p].push(q);
-            }
-        } else if class_q.is_none() {
-            equivalence_classes.push(vec![q]);
-        }
-    }
+    let equivalence = start_info.equivalence(energy_game.energies);
 
-    for c in &equivalence_classes {
-        println!("{:?}", c);
-    }
-    println!("{}", equivalence_classes.len());
+    // Generate various equivalence relations
+    println!("\nNumber of equivalence classes according to different equivalences:");
+    let enabledness = equivalence.relation(std_equivalences::enabledness());
+    let traces = equivalence.relation(std_equivalences::traces());
+    let simulation = equivalence.relation(std_equivalences::simulation());
+    println!("Enabledness:  {}", enabledness.count_classes());
+    println!("Traces:       {}", traces.count_classes());
+    println!("Simulation:   {}", simulation.count_classes());
+    println!("Bisimulation: {}", equivalence.start_info.starting_equivalence.count_classes());
     Ok(())
 }
 

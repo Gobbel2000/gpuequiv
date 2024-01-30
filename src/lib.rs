@@ -3,10 +3,12 @@ pub mod energygame;
 pub mod gamebuild;
 pub mod error;
 mod bisimulation;
+mod equivalence;
 
 // Re-exports
 pub use energy::*;
 pub use error::*;
+pub use equivalence::*;
 
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -99,17 +101,23 @@ impl TransitionSystem {
         self.adj.len() as u32
     }
 
-    pub fn build_game_graph(self, p: u32, q: u32) -> GameGraph {
-        let mut builder = GameBuild::with_lts(self);
-        builder.compare(p, q);
+    pub fn build_game_graph(&self, p: u32, q: u32) -> GameGraph {
+        let builder = GameBuild::compare(self, p, q);
         builder.game
     }
 
-    pub async fn winning_budgets(self, p: u32, q: u32) -> Result<Vec<EnergyArray>> {
+    pub async fn winning_budgets(&self, p: u32, q: u32) -> Result<Vec<EnergyArray>> {
         let game_graph = self.build_game_graph(p, q);
         let mut game = EnergyGame::standard_reach(game_graph);
         game.run().await?;
         Ok(game.energies)
+    }
+
+    pub async fn equivalences(&self) -> Result<Equivalence> {
+        let (builder, start_info) = GameBuild::compare_all_but_bisimilar(self, true);
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(start_info.equivalence(game.energies))
     }
 }
 

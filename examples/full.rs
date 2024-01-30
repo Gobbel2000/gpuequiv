@@ -20,7 +20,7 @@ async fn run() -> Result<()> {
     for e in &winning_budgets {
         println!("{e}");
     }
-    // The comparison for process S and S' is located at index 0.
+    // The requested comparison for processes S and S' is located at index 0.
     // `energy` now represents the minimal costs of a formula that can distinguish S and S'.
     let energy = &winning_budgets[0];
     println!("\nWinning budgets when comparing S and S':\n{}", energy);

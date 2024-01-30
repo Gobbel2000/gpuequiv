@@ -3,6 +3,7 @@
 // Bisping 2023 - Process Equivalence Problems as Energy Games, Figure 4
 
 use gpuequiv::*;
+use gpuequiv::gamebuild::*;
 use gpuequiv::energygame::*;
 
 fn main() {
@@ -17,10 +18,9 @@ fn main() {
             (2, 2, 0),
         ],
     );
-    let mut builder = gamebuild::GameBuild::with_lts(lts);
     // Build game graph that can compare processes 0 and 1.
     // This initializes the graph with the Attack node (0, {1})a
-    builder.compare(0, 1);
+    let builder = GameBuild::compare(&lts, 0, 1);
 
     println!("Nodes:");
     for (i, p) in builder.nodes.iter().enumerate() {

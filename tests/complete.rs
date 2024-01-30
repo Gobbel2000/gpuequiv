@@ -24,8 +24,7 @@ fn example() -> TransitionSystem {
 #[test]
 fn example_game_graph() {
     let lts = example();
-    let mut builder = GameBuild::with_lts(lts);
-    builder.compare(0, 1);
+    let builder = GameBuild::compare(&lts, 0, 1);
     assert_eq!(builder.nodes.iter().map(|p| p.as_ref()).collect::<Vec<_>>(),
         vec![
             &Position::attack(0, vec![1]), // (S, {S'}) a
