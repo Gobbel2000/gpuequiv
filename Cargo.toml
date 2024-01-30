@@ -1,8 +1,15 @@
 [package]
 name = "gpuequiv"
 version = "0.1.0"
+authors = ["Gabriel Vogel"]
 edition = "2021"
 rust-version = "1.73"
+description = "A GPU-accelerated implementation of an algorithm to find all equivalences of processes"
+repository = "https://github.com/Gobbel2000/gpuequiv"
+license = "MIT"
+keywords = ["equivalence", "game-theory", "webgpu"]
+categories = ["science"]
+exclude = ["/graphgen/"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
