@@ -96,6 +96,7 @@ impl AttackPosition {
 
     // Calculate  Q -a-> Q'
     // That is,  q' ∈ Q'  iff  ∃q ∈ Q . q -a-> q'
+    #[inline(always)]
     fn set_transition(&self, lts: &TransitionSystem, action: i32) -> Vec<u32> {
         let mut q: Vec<u32> = self.q.iter().flat_map(|&q| lts.adj[q as usize].iter()
                 .filter(|t| t.label == action)
@@ -206,22 +207,27 @@ pub enum Position {
 }
 
 impl Position {
+    #[inline]
     pub fn attack(p: u32, q: Vec<u32>) -> Self {
         Position::Attack(AttackPosition { p, q })
     }
 
+    #[inline]
     pub fn clause(p: u32, q: u32) -> Self {
         Position::Clause(SingletonPosition { p, q })
     }
 
+    #[inline]
     pub fn defend(p: u32, q: Vec<u32>, qx: Vec<u32>) -> Self {
         Position::Defend(DefendPosition { p, q, qx })
     }
 
+    #[inline]
     pub fn is_attack(&self) -> bool {
         matches!(self, Position::Attack(_) | Position::Clause(_))
     }
 
+    #[inline]
     pub fn successors(&self, lts: &TransitionSystem) -> (Vec<Position>, UpdateArray) {
         match self {
             Position::Attack(p) => p.successors(lts),
