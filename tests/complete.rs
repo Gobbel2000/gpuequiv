@@ -143,7 +143,7 @@ fn bisimilar() -> TransitionSystem {
 #[pollster::test]
 async fn test_bisimilar() {
     let lts = bisimilar();
-    let partitions = lts.signature_refinement();
+    let (partitions, _count) = lts.signature_refinement();
     assert!(partitions[0] == partitions[5]);
     let energies = lts.winning_budgets(0, 5).await.unwrap();
     assert_eq!(energies[0], EnergyArray::empty(EnergyConf::STANDARD));

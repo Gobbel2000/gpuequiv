@@ -45,7 +45,7 @@ async fn run() -> Result<()> {
     let lts = lts();
 
     // Compare all processes with each other
-    let equivalence = lts.equivalences().await?;
+    let (equivalence, mapping) = lts.equivalences().await?;
 
     // Look at the winning budgets of the game
     for (energy, position) in equivalence.energies.iter()
@@ -60,19 +60,21 @@ async fn run() -> Result<()> {
     // Count the number of equivalence classes
     println!("Number of Bisimulation equivalence classes: {}", bisimulation.count_classes());
 
-    let failures = equivalence.relation(std_equivalences::failures());
+    let failures = equivalence.relation(std_equivalences::failures())
+        .with_mapping(&mapping); // Apply mapping to have an equivalence relation to the original,
+                                 // unminimized LTS.
     // Construct the equivalence classes themselves
     println!("\nFailure equivalence classes:");
     for class in failures.get_classes() {
         println!("{class:?}");
     }
 
-    // Compare two specific processes
+    // Compare two specific processes, must use mapping here
     println!("\nFailure Equivalence between processes 0 and 9: {}",
              failures.equiv(0, 9));
     let failure_traces = equivalence.relation(std_equivalences::failure_traces());
     println!("Failure Trace Equivalence between processes 0 and 9: {}",
-             failure_traces.equiv(0, 9));
+             failure_traces.equiv(mapping[0], mapping[9])); // Mapping applied manually
     Ok(())
 }
 

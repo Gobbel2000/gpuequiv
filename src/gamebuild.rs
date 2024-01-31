@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use ndarray::Axis;
 
 use crate::{TransitionSystem, StartInfo};
@@ -145,16 +145,19 @@ impl GameBuild {
         (builder, start_info)
     }
 
+    /// **Do not use this function, instead minimize the LTS with `lts.bisimilar_minimize`,
+    /// and then use `compare_all`.
+    #[doc(hidden)]
     pub fn compare_all_but_bisimilar(lts: &TransitionSystem, include_symmetric: bool) -> (Self, StartInfo) {
         // Compute bisimulation
-        let partition = lts.signature_refinement();
+        let (partition, count) = lts.signature_refinement();
         // Pick one representative for each bisimulation equivalence class
-        let mut represented = FxHashSet::default();
+        let mut represented = vec![false; count];
         let mut representatives = Vec::new();
         for (proc, part) in partition.iter().enumerate() {
-            if !represented.contains(part) {
+            if !represented[*part] {
                 representatives.push(proc as u32);
-                represented.insert(part);
+                represented[*part] = true;
             }
         }
         // Compare all representatives with each other

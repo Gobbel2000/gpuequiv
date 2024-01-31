@@ -8,10 +8,11 @@ use gpuequiv::energygame::*;
 use gpuequiv::gamebuild::*;
 
 async fn csv_lts(fname: &OsStr) -> io::Result<()> {
-    let lts = TransitionSystem::from_csv_file(fname)?;
+    let full_lts = TransitionSystem::from_csv_file(fname)?;
+    let (lts, _bisim) = full_lts.bisimilar_minimize();
 
     let now = Instant::now();
-    let (builder, start_info) = GameBuild::compare_all_but_bisimilar(&lts, true);
+    let (builder, start_info) = GameBuild::compare_all(&lts, true);
     println!("Game built in {:.5}s", now.elapsed().as_secs_f64());
 
     println!("Number of nodes: {}", builder.game.n_vertices());
@@ -22,8 +23,9 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
 
     // Solve energy game on GPU
     println!("Running game...");
+    let mut runner = energy_game.get_gpu_runner().await.unwrap();
     let now = Instant::now();
-    energy_game.run().await.unwrap();
+    runner.execute_gpu().await.unwrap();
     println!("Ran energy game in {:.5}s", now.elapsed().as_secs_f64());
 
     let equivalence = start_info.equivalence(energy_game.energies);

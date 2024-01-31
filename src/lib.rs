@@ -113,8 +113,13 @@ impl TransitionSystem {
         Ok(game.energies)
     }
 
-    pub async fn equivalences(&self) -> Result<Equivalence> {
-        let (builder, start_info) = GameBuild::compare_all_but_bisimilar(self, true);
+    pub async fn equivalences(&self) -> Result<(Equivalence, Vec<usize>)> {
+        let (reduced, mapping) = self.bisimilar_minimize();
+        Ok((reduced.equivalences_unminimized().await?, mapping))
+    }
+
+    pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
+        let (builder, start_info) = GameBuild::compare_all(self, true);
         let mut game = EnergyGame::standard_reach(builder.game);
         game.run().await?;
         Ok(start_info.equivalence(game.energies))

@@ -25,7 +25,7 @@ impl StartInfo {
         }
     }
 
-    pub fn from_partition(starting_points: Vec<AttackPosition>, partition: &[u32]) -> Self {
+    pub fn from_partition(starting_points: Vec<AttackPosition>, partition: &[usize]) -> Self {
         let mut union = UnionFind::new(partition.len());
         let mut representatives = FxHashMap::default();
         for (proc, part) in partition.iter().enumerate() {
@@ -76,6 +76,20 @@ pub struct EquivalenceRelation {
 }
 
 impl EquivalenceRelation {
+    pub fn with_mapping(&self, mapping: &[usize]) -> Self {
+        let mut union = UnionFind::new(mapping.len());
+        let mut representative = FxHashMap::default();
+        for (proc, minimized) in mapping.iter().enumerate() {
+            let part = self.find(*minimized);
+            if let Some(class) = representative.get(&part) {
+                union.union(proc, *class);
+            } else {
+                representative.insert(part, proc);
+            }
+        }
+        union.into()
+    }
+
     pub fn get_classes(&self) -> Vec<Vec<usize>> {
         let mut class_idx = FxHashMap::default();
         let mut classes = Vec::new();
@@ -102,6 +116,12 @@ impl EquivalenceRelation {
             }
         }
         count
+    }
+
+    pub fn class_of(&self, proc: usize) -> impl Iterator<Item=usize> + '_ {
+        let class = self.find(proc);
+        (0..self.len())
+            .filter(move |i| self.find(*i) == class)
     }
 
     pub fn into_inner(self) -> UnionFind {
