@@ -119,7 +119,7 @@ impl TransitionSystem {
     }
 
     pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
-        let (builder, start_info) = GameBuild::compare_all(self, true);
+        let (builder, start_info) = GameBuild::compare_all(self);
         let mut game = EnergyGame::standard_reach(builder.game);
         game.run().await?;
         Ok(start_info.equivalence(game.energies))

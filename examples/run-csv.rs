@@ -12,7 +12,7 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let (lts, _bisim) = full_lts.bisimilar_minimize();
 
     let now = Instant::now();
-    let (builder, start_info) = GameBuild::compare_all(&lts, true);
+    let (builder, start_info) = GameBuild::compare_all(&lts);
     println!("Game built in {:.5}s", now.elapsed().as_secs_f64());
 
     println!("Number of nodes: {}", builder.game.n_vertices());

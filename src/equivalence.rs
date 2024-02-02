@@ -60,9 +60,17 @@ impl Equivalence {
 
     pub fn relation(&self, equivalence: &Energy) -> EquivalenceRelation {
         let mut union = self.start_info.starting_equivalence.clone().into_inner();
+        let pos_to_idx: FxHashMap<&AttackPosition, usize> = self.start_info.starting_points.iter()
+            .enumerate()
+            .map(|(i, p)| (p, i))
+            .collect();
         for (pos, energy) in self.start_info.starting_points.iter().zip(&self.energies) {
-            if energy.test_equivalence(equivalence) {
-                union.union(pos.p as usize, pos.q[0] as usize);
+            let p = pos.p;
+            let q = pos.q[0];
+            let symmetric = AttackPosition { p: q, q: vec![p] };
+            let e2 = &self.energies[*pos_to_idx.get(&symmetric).expect("Should have all symmetric starting points")];
+            if energy.test_equivalence(equivalence) && e2.test_equivalence(equivalence) {
+                union.union(p as usize, q as usize);
             }
         }
         union.into()

@@ -129,11 +129,10 @@ impl GameBuild {
         builder
     }
 
-    pub fn compare_all(lts: &TransitionSystem, include_symmetric: bool) -> (Self, StartInfo) {
+    pub fn compare_all(lts: &TransitionSystem) -> (Self, StartInfo) {
         let mut builder = Self::default();
         for p in 0..lts.n_vertices() {
-            let end = if include_symmetric { lts.n_vertices() } else { p };
-            for q in 0..end {
+            for q in 0..lts.n_vertices() {
                 // Only compare if p and q have the same enabled actions
                 if p != q && lts.compare_enabled(p, q) == (true, true) {
                     builder.new_node(Position::attack(p, vec![q]));
@@ -148,7 +147,7 @@ impl GameBuild {
     /// **Do not use this function, instead minimize the LTS with `lts.bisimilar_minimize`,
     /// and then use `compare_all`.
     #[doc(hidden)]
-    pub fn compare_all_but_bisimilar(lts: &TransitionSystem, include_symmetric: bool) -> (Self, StartInfo) {
+    pub fn compare_all_but_bisimilar(lts: &TransitionSystem) -> (Self, StartInfo) {
         // Compute bisimulation
         let (partition, count) = lts.signature_refinement();
         // Pick one representative for each bisimulation equivalence class
@@ -162,9 +161,8 @@ impl GameBuild {
         }
         // Compare all representatives with each other
         let mut builder = Self::default();
-        for (i, &p) in representatives.iter().enumerate() {
-            let slice = if include_symmetric { &representatives } else { &representatives[..i] };
-            for &q in slice {
+        for &p in &representatives {
+            for &q in &representatives {
                 // Only compare if p and q have the same enabled actions
                 if p != q && lts.compare_enabled(p, q) == (true, true) {
                     builder.new_node(Position::attack(p, vec![q]));
