@@ -61,40 +61,39 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
             @builtin(local_invocation_index) l_idx: u32)
 {
     let i = g_id.x;
-    if i >= node_offsets[work_size - 1u].offset {
-        return;
-    }
-
     let start_node_idx = binsearch(i);
 
     let packing_offset = l_idx & 0x1fu; // zero everything but last 5 bits, l_idx % 32
     var is_minimal = 1u << packing_offset;
-    let energy = energies[i];
 
-    let e_start = node_offsets[start_node_idx].offset;
-    let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
-    for (var j: u32 = e_start; j < e_end; j++) {
-        let e2 = energies[j];
-        // Skip reflexive comparisons,
-        // When energies are equal, keep only those with higher index
-        let eq = energy_eq(e2, energy);
-        if j != i && ((eq && i < j) ||
-                      (!eq && less_eq(e2, energy))) {
-            // Mark to be filtered out
-            is_minimal = 0u;
-            break;
+    if i < node_offsets[work_size - 1u].offset {
+        let energy = energies[i];
+
+        let e_start = node_offsets[start_node_idx].offset;
+        let e_end = node_offsets[start_node_idx + 1u].offset; // exclusive
+        for (var j: u32 = e_start; j < e_end; j++) {
+            let e2 = energies[j];
+            // Skip reflexive comparisons,
+            // When energies are equal, keep only those with higher index
+            let eq = energy_eq(e2, energy);
+            if j != i && ((eq && i < j) ||
+                          (!eq && less_eq(e2, energy))) {
+                // Mark to be filtered out
+                is_minimal = 0u;
+                break;
+            }
         }
-    }
 
-    let own_energies_offs = node_offsets[start_node_idx + 1u].successor_offsets_idx - 1u;
-    let own_energies = successor_offsets[own_energies_offs];
-    if i < own_energies && is_minimal != 0u {
-        // There is a minimal energy that was not previously part of this
-        // node's energies.
-        changed[start_node_idx] = 1u;
-    }
+        let own_energies_offs = node_offsets[start_node_idx + 1u].successor_offsets_idx - 1u;
+        let own_energies = successor_offsets[own_energies_offs];
+        if i < own_energies && is_minimal != 0u {
+            // There is a minimal energy that was not previously part of this
+            // node's energies.
+            changed[start_node_idx] = 1u;
+        }
 
-    minima_buf[l_idx] = is_minimal;
+        minima_buf[l_idx] = is_minimal;
+    }
 
     workgroupBarrier();
 

@@ -160,16 +160,16 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
         n_minimized += min(size - chunk, 64u) - minima_total;
 
         // Shift energies left to fill any gaps left by non-minimal energies
+        storageBarrier();
         if filter_out == 0u && i < size { // Only shift minimal energies
             // Shift by number of filtered elements in this chunk +
             // total previously filtered energies.
             let shift = minima_buf[l_idx] + total_filtered;
-            storageBarrier();
             suprema[nbase + i - shift] = energy;
         }
+        storageBarrier();
         total_filtered += minima_total;
     }
-    storageBarrier();
     return n_minimized;
 }
 
