@@ -1,7 +1,15 @@
 // This example shows how to compare all processes of
 // an LTS with each other and interprete the result.
+//
+// This example is also set up to run on wasm.
 
 use gpuequiv::*;
+
+// Redirect println to browser log on wasm
+#[cfg(target_arch = "wasm32")]
+macro_rules! println {
+    ($($arg:tt)+) => (log::info!($($arg)+))
+}
 
 // Counterexample 3 (page 286) from R.J.v. Glabbeek - The Linear Time - Branching Time Spectrum
 // 0 ==Failure 9
@@ -79,6 +87,19 @@ async fn run() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
-    pollster::block_on(run())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        env_logger::init();
+        pollster::block_on(run())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+        console_log::init().expect("Could not initialize console logger");
+        async fn run_panicking() {
+            run().await.unwrap()
+        }
+        wasm_bindgen_futures::spawn_local(run_panicking());
+        Ok(())
+    }
 }
