@@ -1,5 +1,4 @@
 alias Energy = array<u32, $ENERGY_SIZE>;
-alias Update = array<u32, $UPDATE_SIZE>;
 
 @group(0) @binding(0)
 var<storage, read_write> energies: array<Energy>;
