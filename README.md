@@ -21,6 +21,7 @@ aiming to enable advanced access to GPUs in web browsers.
 Therefore, this library can be used in WebAssembly,
 although it requires the browser to support the WebGPU API.
 
+Requires **rust version** >= 1.73.
 
 ## Examples
 

@@ -15,7 +15,6 @@ use log::Level::Trace;
 use log::{trace, debug, log_enabled};
 use ndarray::{Array2, ArrayView2, Axis, s};
 use rustc_hash::{FxHashSet, FxHashMap};
-use serde::{Serialize, Deserialize};
 use wgpu::{Buffer, Device};
 use wgpu::util::DeviceExt;
 
@@ -31,7 +30,7 @@ const WORKGROUP_SIZE: u32 = 64;
 // Buffers with size 0 are not allowed.
 const INITIAL_CAPACITY: u64 = 64;
 
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SerdeGameGraph {
     pub conf: EnergyConf,
     pub adj: Vec<Vec<u32>>,
@@ -105,8 +104,10 @@ impl TryFrom<SerdeGameGraph> for GameGraph {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(try_from = "SerdeGameGraph", into = "SerdeGameGraph")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "SerdeGameGraph", into = "SerdeGameGraph"))]
 pub struct GameGraph {
     // CSR graph representation. colmumn_indices is all adjacency lists, flattened out
     pub column_indices: Vec<u32>,

@@ -22,6 +22,7 @@ use rustc_hash::FxHashMap;
 
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transition {
     pub process: u32,
 
@@ -35,6 +36,7 @@ pub struct Transition {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransitionSystem {
     pub adj: Vec<Vec<Transition>>,
 }

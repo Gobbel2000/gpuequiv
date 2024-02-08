@@ -4,7 +4,6 @@ use std::iter;
 
 use rustc_hash::FxHashSet;
 use ndarray::{Array2, ArrayView2, ArrayView1, Axis, aview1, ArrayBase, Ix2, Data};
-use serde::{Serialize, Deserialize};
 
 macro_rules! fn_get_conf {
     () => {
@@ -34,7 +33,8 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyConf {
     pub elements: u32,
     pub max: u32,
