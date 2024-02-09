@@ -1,4 +1,4 @@
-pub mod gamepos;
+mod gamepos;
 
 use std::cmp::Ordering;
 use std::ops::Deref;
@@ -21,8 +21,8 @@ impl TransitionSystem {
         let mut subset = true;
         let mut superset = true;
 
-        let p_labels = &self.adj[p as usize];
-        let q_labels = &self.adj[q as usize];
+        let p_labels = self.adj(p);
+        let q_labels = self.adj(q);
 
         let mut p_ptr = 0;
         let p_max = p_labels.len();

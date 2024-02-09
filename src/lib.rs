@@ -1,7 +1,7 @@
-pub mod energy;
 pub mod energygame;
 pub mod gamebuild;
-pub mod error;
+mod energy;
+mod error;
 mod bisimulation;
 mod equivalence;
 
@@ -20,7 +20,6 @@ use energygame::{EnergyGame, GameGraph};
 
 use rustc_hash::FxHashMap;
 
-
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transition {
@@ -35,23 +34,15 @@ pub struct Transition {
     pub label: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransitionSystem {
-    pub adj: Vec<Vec<Transition>>,
+    adj: Vec<Vec<Transition>>,
 }
 
 type Edge = (u32, u32, i32);
 
 impl TransitionSystem {
-    pub fn new(n_vertices: u32, edges: Vec<Edge>) -> Self {
-        let mut adj = vec![vec![]; n_vertices as usize];
-        for (from, to, label) in edges {
-            adj[from as usize].push(Transition { process: to, label });
-        }
-        TransitionSystem::from(adj)
-    }
-
     pub fn from_csv_lines(lines: impl Iterator<Item=io::Result<String>>) -> result::Result<Self, CSVError> {
         let mut adj = vec![];
         let mut labels: FxHashMap<String, i32> = FxHashMap::default();
@@ -93,14 +84,24 @@ impl TransitionSystem {
         Self::from_csv_lines(lines)
     }
 
-    pub fn sort_labels(&mut self) {
-        for row in self.adj.iter_mut() {
-            row.sort_by_key(|t| t.label);
-        }
-    }
-
+    #[inline]
     pub fn n_vertices(&self) -> u32 {
         self.adj.len() as u32
+    }
+
+    #[inline]
+    pub fn adj(&self, start: u32) -> &[Transition] {
+        &self.adj[start as usize]
+    }
+
+    #[inline]
+    pub fn inner(&self) -> &[Vec<Transition>] {
+        &self.adj
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> Vec<Vec<Transition>> {
+        self.adj
     }
 
     pub fn build_game_graph(&self, p: u32, q: u32) -> GameGraph {
@@ -126,14 +127,34 @@ impl TransitionSystem {
         game.run().await?;
         Ok(start_info.equivalence(game.energies))
     }
+
+    /// Create LTS from adjacency list. This function assumes that the lists in `adj` are already
+    /// sorted by label. If not, the algorithm will produce incorrect results. Use
+    /// [`TransitionSystem::from()`] instead to ensure correct sorting.
+    pub fn from_adj_unchecked(adj: Vec<Vec<Transition>>) -> Self {
+        TransitionSystem { adj }
+    }
+
+    fn sort_labels(&mut self) {
+        for row in self.adj.iter_mut() {
+            row.sort_by_key(|t| t.label);
+        }
+    }
+
 }
 
 impl From<Vec<Vec<Transition>>> for TransitionSystem {
     // Create new LTS from adjacency list, ensuring that it is properly sorted
     fn from(adj: Vec<Vec<Transition>>) -> Self {
-        let mut lts = TransitionSystem { adj };
+        let mut lts = TransitionSystem::from_adj_unchecked(adj);
         lts.sort_labels();
         lts
+    }
+}
+
+impl From<Vec<Edge>> for TransitionSystem {
+    fn from(edges: Vec<Edge>) -> Self {
+        edges.into_iter().collect()
     }
 }
 
@@ -142,8 +163,9 @@ impl FromIterator<Edge> for TransitionSystem {
         let mut adj = vec![];
         for (from, to, label) in iter {
             let from = from as usize;
-            if from >= adj.len() {
-                adj.resize(from + 1, vec![]);
+            let max_node = from.max(to as usize);
+            if max_node >= adj.len() {
+                adj.resize(max_node + 1, vec![]);
             }
             adj[from].push(Transition { process: to, label });
         }

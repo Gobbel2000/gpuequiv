@@ -22,8 +22,7 @@ macro_rules! println {
 //
 // a..=f => 0..=5
 fn lts() -> TransitionSystem {
-    TransitionSystem::new(
-        18,
+    TransitionSystem::from(
         vec![
             (0, 1, 0),
             (0, 5, 0),

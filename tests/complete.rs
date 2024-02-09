@@ -6,8 +6,7 @@ use gpuequiv::gamebuild::*;
 // Figure 4
 // The expected game graph and energies correspond to Figure 8.
 fn example() -> TransitionSystem {
-    TransitionSystem::new(
-        3,
+    TransitionSystem::from(
         vec![
             (0, 0, 0),  // 0 => S
             (0, 2, 0),
@@ -116,8 +115,7 @@ async fn example_energies() {
 // Exercise 3.5 (page 48) from L. Aceto et. al. - Reactive Systems: Modelling, Specification and Verification
 // s0 and t0 (here 0 and 5) are bisimilar.
 fn bisimilar() -> TransitionSystem {
-    TransitionSystem::new(
-        10,
+    TransitionSystem::from(
         // Action a => 0
         //        b => 1
         vec![
@@ -161,8 +159,7 @@ async fn test_bisimilar() {
 //
 // a..=f => 0..=5
 fn failure_trace() -> TransitionSystem {
-    TransitionSystem::new(
-        18,
+    TransitionSystem::from(
         vec![
             (0, 1, 0),
             (0, 5, 0),

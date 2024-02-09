@@ -26,10 +26,10 @@ impl AttackPosition {
                 Update::new(&update![0, Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
             ))
         };
-        let mut positions = Vec::with_capacity(lts.adj[self.p as usize].len() + 4);
+        let mut positions = Vec::with_capacity(lts.adj(self.p).len() + 4);
 
         // Observation moves
-        for transition in &lts.adj[self.p as usize] {
+        for transition in lts.adj(self.p) {
             positions.push(Position::attack(
                 transition.process,
                 self.set_transition(lts, transition.label)
@@ -98,7 +98,7 @@ impl AttackPosition {
     // That is,  q' ∈ Q'  iff  ∃q ∈ Q . q -a-> q'
     #[inline(always)]
     fn set_transition(&self, lts: &TransitionSystem, action: i32) -> Vec<u32> {
-        let mut q: Vec<u32> = self.q.iter().flat_map(|&q| lts.adj[q as usize].iter()
+        let mut q: Vec<u32> = self.q.iter().flat_map(|&q| lts.adj(q).iter()
                 .filter(|t| t.label == action)
                 .map(|t| t.process)
             )

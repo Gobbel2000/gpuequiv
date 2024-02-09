@@ -8,7 +8,7 @@ impl TransitionSystem {
     /// The first return value is the partition, the second the number of bisimilarity classes.
     ///
     /// The partition list contains an index of the bisimulation equivalence class for each process.
-    /// That is, if p = signature_refinement(), then p[i] == p[j] iff i ~ j.
+    /// That is, if `p = signature_refinement()`, then `p[i] == p[j]` iff `i ~ j`.
     /// In other words, if and only if two processes get assigned the same partition index,
     /// they are bisimilar.
     ///

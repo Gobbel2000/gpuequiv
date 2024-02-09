@@ -7,8 +7,7 @@ use gpuequiv::gamebuild::*;
 use gpuequiv::energygame::*;
 
 fn main() {
-    let lts = TransitionSystem::new(
-        3,
+    let lts = TransitionSystem::from(
         vec![
             (0, 0, 0),
             (0, 2, 0),
