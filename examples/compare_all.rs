@@ -52,7 +52,7 @@ async fn run() -> Result<()> {
     let lts = lts();
 
     // Compare all processes with each other
-    let (equivalence, mapping) = lts.equivalences().await?;
+    let (equivalence, minimization) = lts.equivalences().await?;
 
     // Look at the winning budgets of the game
     for (energy, position) in equivalence.energies.iter()
@@ -68,20 +68,27 @@ async fn run() -> Result<()> {
     println!("Number of Bisimulation equivalence classes: {}", bisimulation.count_classes());
 
     let failures = equivalence.relation(std_equivalences::failures())
-        .with_mapping(&mapping); // Apply mapping to have an equivalence relation to the original,
-                                 // unminimized LTS.
+        .with_mapping(&minimization); // Apply mapping to have an equivalence relation to the original,
+                                      // unminimized LTS.
     // Construct the equivalence classes themselves
     println!("\nFailure equivalence classes:");
     for class in failures.get_classes() {
         println!("{class:?}");
     }
 
-    // Compare two specific processes, must use mapping here
+    // Compare two specific processes using the equivalence relation,
+    // minimization was already applied on the whole relation.
     println!("\nFailure Equivalence between processes 0 and 9: {}",
              failures.equiv(0, 9));
-    let failure_traces = equivalence.relation(std_equivalences::failure_traces());
+
+    // Directly compare 2 processes. The minimization mapping is applied manually.
     println!("Failure Trace Equivalence between processes 0 and 9: {}",
-             failure_traces.equiv(mapping[0], mapping[9])); // Mapping applied manually
+             equivalence.equiv(minimization[0] as u32, minimization[9] as u32,
+                               std_equivalences::failure_traces()));
+    // Preorder comparison
+    println!("Process 0 can simulate process 9: {}",
+             equivalence.preorder(minimization[0] as u32, minimization[0] as u32,
+                                  std_equivalences::simulation()));
     Ok(())
 }
 

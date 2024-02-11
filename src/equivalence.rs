@@ -51,24 +51,85 @@ impl StartInfo {
 pub struct Equivalence {
     pub start_info: StartInfo,
     pub energies: Vec<EnergyArray>,
+    pos_to_idx: FxHashMap<AttackPosition, usize>,
 }
 
 impl Equivalence {
-    pub fn new(start_info: StartInfo, energies: Vec<EnergyArray>) -> Self {
-        Equivalence { start_info, energies }
+    pub fn new(start_info: StartInfo, mut energies: Vec<EnergyArray>) -> Self {
+        assert!(energies.len() >= start_info.starting_points.len(), "Not enough energies");
+        // Retain only the required energies
+        energies.truncate(start_info.starting_points.len());
+        energies.shrink_to_fit();
+
+        let pos_to_idx: FxHashMap<AttackPosition, usize> = start_info.starting_points.iter()
+            .enumerate()
+            .map(|(i, p)| (p.clone(), i))
+            .collect();
+        Equivalence {
+            start_info,
+            energies,
+            pos_to_idx,
+        }
     }
 
+    /// Retrieve energies associated with the position `(p, q)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the position `(p, q)` was not included in the initial starting points for game
+    /// graph generation.
+    pub fn energies(&self, p: u32, q: u32) -> &EnergyArray {
+        let pos = AttackPosition { p, q: vec![q] };
+        let idx = self.pos_to_idx.get(&pos)
+            .expect("Position not included in starting points for energy game");
+        self.energies.get(*idx).expect("Energy list out of range")
+    }
+
+    /// Returns `true`, if process `p` is covered by process 'q' according to a given
+    /// `equivalence`. That is, `p <= q` for the preorder induced by `equivalence`.
+    ///
+    /// This can be used to test equivalences that are not inherently symmetric. The function
+    /// [`equiv`](Equivalence::equiv) instead requires the preorder to hold in both directions:
+    ///
+    /// `self.equiv(p, q, equ) == true` if and only if `self.preorder(p, q, equ) && self.preorder(q, p, equ)`
+    ///
+    /// # Panics
+    ///
+    /// Panics if the position `(p, q)` was not included in the initial starting points for game
+    /// graph generation.
+    pub fn preorder(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
+        if p == q {
+            return true;
+        }
+        self.energies(p, q).test_equivalence(equivalence)
+    }
+
+    /// Returns `true`, if processes `p` and `q` are equivalent according to the given equivalence.
+    /// In contrast to [`preorder`](Equivalence::preorder), this function requires the equivalence in both directions, so
+    /// the order of `p` and `q` doesn't matter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the position `(p, q)` was not included in the initial starting points for game
+    /// graph generation.
+    pub fn equiv(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
+        self.preorder(p, q, equivalence) && self.preorder(q, p, equivalence)
+    }
+
+    /// Create the full equivalence relation for a given equivalence.
+    ///
+    /// Any processes `p` and `q` will be in the same class if `self.equiv(p, q, equ) == true`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial starting points for game graph generation didn't include the full
+    /// symmetric closure.
     pub fn relation(&self, equivalence: &Energy) -> EquivalenceRelation {
         let mut union = self.start_info.starting_equivalence.clone().into_inner();
-        let pos_to_idx: FxHashMap<&AttackPosition, usize> = self.start_info.starting_points.iter()
-            .enumerate()
-            .map(|(i, p)| (p, i))
-            .collect();
         for (pos, energy) in self.start_info.starting_points.iter().zip(&self.energies) {
             let p = pos.p;
             let q = pos.q[0];
-            let symmetric = AttackPosition { p: q, q: vec![p] };
-            let e2 = &self.energies[*pos_to_idx.get(&symmetric).expect("Should have all symmetric starting points")];
+            let e2 = &self.energies(q, p);
             if energy.test_equivalence(equivalence) && e2.test_equivalence(equivalence) {
                 union.union(p as usize, q as usize);
             }

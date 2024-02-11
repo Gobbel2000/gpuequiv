@@ -16,7 +16,7 @@ use std::path::Path;
 use std::result;
 
 use gamebuild::GameBuild;
-use energygame::{EnergyGame, GameGraph};
+use energygame::EnergyGame;
 
 use rustc_hash::FxHashMap;
 
@@ -104,21 +104,30 @@ impl TransitionSystem {
         self.adj
     }
 
-    pub fn build_game_graph(&self, p: u32, q: u32) -> GameGraph {
+    pub async fn compare(&self, p: u32, q: u32) -> Result<EnergyArray> {
         let builder = GameBuild::compare(self, p, q);
-        builder.game
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(game.energies.into_iter().next().unwrap())
     }
 
-    pub async fn winning_budgets(&self, p: u32, q: u32) -> Result<Vec<EnergyArray>> {
-        let game_graph = self.build_game_graph(p, q);
-        let mut game = EnergyGame::standard_reach(game_graph);
+    pub async fn compare_multiple(&self, processes: &[u32]) -> Result<(Equivalence, Vec<usize>)> {
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let equivalence = reduced.compare_multiple_unminimized(processes).await?;
+        Ok((equivalence, minimization))
+    }
+
+    pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
+        let (builder, start_info) = GameBuild::compare_multiple(self, processes, true);
+        let mut game = EnergyGame::standard_reach(builder.game);
         game.run().await?;
-        Ok(game.energies)
+        Ok(start_info.equivalence(game.energies))
     }
 
     pub async fn equivalences(&self) -> Result<(Equivalence, Vec<usize>)> {
-        let (reduced, mapping) = self.bisimilar_minimize();
-        Ok((reduced.equivalences_unminimized().await?, mapping))
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let equivalence = reduced.equivalences_unminimized().await?;
+        Ok((equivalence, minimization))
     }
 
     pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {

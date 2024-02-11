@@ -1,4 +1,5 @@
 use gpuequiv::*;
+use gpuequiv::energygame::EnergyGame;
 use gpuequiv::gamebuild::*;
 
 // Example transition system from
@@ -105,9 +106,10 @@ async fn example_energies() {
             EnergyArray::zero(1, c),
             earray!(c, vec![1, 1, 0, 1], vec![1, 2, 0, 0, 1, 2]),
         ];
-    for (i, (en, exp)) in lts.winning_budgets(0, 1).await.unwrap()
-        .into_iter().zip(expected).enumerate()
-    {
+    let builder = GameBuild::compare(&lts, 0, 1);
+    let mut game = EnergyGame::standard_reach(builder.game);
+    game.run().await.unwrap();
+    for (i, (en, exp)) in game.energies.into_iter().zip(expected).enumerate() {
         assert_eq!(en, exp, "Wrong energies for node {i}: {en} != {exp}");
     }
 }
@@ -143,9 +145,9 @@ async fn test_bisimilar() {
     let lts = bisimilar();
     let (partitions, _count) = lts.signature_refinement();
     assert!(partitions[0] == partitions[5]);
-    let energies = lts.winning_budgets(0, 5).await.unwrap();
-    assert_eq!(energies[0], EnergyArray::empty(EnergyConf::STANDARD));
-    assert!(energies[0].test_equivalence(std_equivalences::bisimulation()));
+    let energies = lts.compare(0, 5).await.unwrap();
+    assert_eq!(energies, EnergyArray::empty(EnergyConf::STANDARD));
+    assert!(energies.test_equivalence(std_equivalences::bisimulation()));
 }
 
 // Counterexample 3 (page 286) from R.J.v. Glabbeek - The Linear Time - Branching Time Spectrum
@@ -188,7 +190,7 @@ fn failure_trace() -> TransitionSystem {
 #[pollster::test]
 async fn test_failure_trace() {
     let lts = failure_trace();
-    let budgets = &lts.winning_budgets(0, 9).await.unwrap()[0];
+    let budgets = &lts.compare(0, 9).await.unwrap();
     // Equivalences that hold
     assert!(budgets.test_equivalence(std_equivalences::failures()));
     assert!(budgets.test_equivalence(std_equivalences::readiness()));

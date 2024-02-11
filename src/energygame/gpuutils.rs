@@ -66,6 +66,6 @@ pub(crate) fn bgl_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutE
 }
 
 // Return true if buf is large enough to contain vec
-pub(crate) fn buffer_fits<T>(vec: &Vec<T>, buf: &Buffer) -> bool {
-    vec.len() * std::mem::size_of::<T>() <= buf.size() as usize
+pub(crate) fn buffer_fits<T>(slice: &[T], buf: &Buffer) -> bool {
+    std::mem::size_of_val(slice) as u64 <= buf.size()
 }

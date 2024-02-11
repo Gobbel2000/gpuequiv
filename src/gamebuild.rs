@@ -120,13 +120,22 @@ impl GameBuild {
         builder
     }
 
-    pub fn compare_multiple(lts: &TransitionSystem, comparisons: &[(u32, u32)]) -> Self {
+    pub fn compare_multiple(
+        lts: &TransitionSystem,
+        processes: &[u32],
+        skip_enabledness: bool,
+    ) -> (Self, StartInfo) {
         let mut builder = Self::default();
-        for (p, q) in comparisons {
-            builder.new_node(Position::attack(*p, vec![*q]));
+        for &p in processes {
+            for &q in processes {
+                if p != q && (!skip_enabledness || lts.compare_enabled(p, q) == (true, true)) {
+                    builder.new_node(Position::attack(p, vec![q]));
+                }
+            }
         }
         builder.build_internal(lts);
-        builder
+        let start_info = StartInfo::new(builder.starting_points(), lts.n_vertices() as usize);
+        (builder, start_info)
     }
 
     pub fn compare_all(lts: &TransitionSystem) -> (Self, StartInfo) {
@@ -183,10 +192,6 @@ impl GameBuild {
                 _ => None,
             })
             .collect()
-    }
-
-    pub fn take_game(&mut self) -> GameGraph {
-        std::mem::replace(&mut self.game, GameGraph::empty(Self::ENERGY_CONF))
     }
 
     fn build_internal(&mut self, lts: &TransitionSystem) {

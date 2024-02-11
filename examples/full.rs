@@ -15,22 +15,17 @@ async fn run() -> Result<()> {
         ],
     );
     // Compare processes 0 and 1 (named S and S')
-    let winning_budgets = lts.winning_budgets(0, 1).await?;
-    for e in &winning_budgets {
-        println!("{e}");
-    }
-    // The requested comparison for processes S and S' is located at index 0.
-    // `energy` now represents the minimal costs of a formula that can distinguish S and S'.
-    let energy = &winning_budgets[0];
-    println!("\nWinning budgets when comparing S and S':\n{}", energy);
+    let winning_budgets = lts.compare(0, 1).await?;
+    // `winning_budgets` now represents the minimal costs of a formula that can distinguish S and S'.
+    println!("\nWinning budgets when comparing S and S':\n{winning_budgets}", );
 
     // Test for specific equivalences
     println!("Trace Equivalence between S and S': {}",
-             energy.test_equivalence(std_equivalences::traces()));
+             winning_budgets.test_equivalence(std_equivalences::traces()));
     println!("S can simulate S': {}",
-             energy.test_equivalence(std_equivalences::simulation()));
+             winning_budgets.test_equivalence(std_equivalences::simulation()));
     println!("Failure Equivalence between S and S': {}",
-             energy.test_equivalence(std_equivalences::failures()));
+             winning_budgets.test_equivalence(std_equivalences::failures()));
     Ok(())
 }
 
