@@ -191,9 +191,8 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
     // invoked again with more allocated memory.
     let available_mem = node_offsets[wg_id.x + 1u].sup_offset - sbase;
 
-    // Copy (updated) energies of current successor
-    var slen = successor_offsets[node.successor_offsets_idx + 1u] -
-        successor_offsets[node.successor_offsets_idx];
+    // Copy (updated) energies of first successor
+    var slen = successor_offsets[node.successor_offsets_idx + 1u] - node.energy_offset;
     if slen > available_mem {
         // Not enough memory, abort.
         status[wg_id.x] = - i32(slen);
@@ -202,14 +201,10 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
     for (var chunk = 0u; chunk < slen; chunk += 64u) {
         let i = chunk + l_idx;
         if i < slen {
-            suprema[sbase + i] = energies[successor_offsets[node.successor_offsets_idx] + i];
+            suprema[sbase + i] = energies[node.energy_offset + i];
         }
     }
     storageBarrier();
-
-    // Minimize energies even in the first set, because it might not be minimal
-    // after applying updates.
-    slen = minimize(sbase, 0u, slen, l_idx);
 
     for (var suc = node.successor_offsets_idx + 1u;
          suc < next.successor_offsets_idx;
@@ -256,7 +251,7 @@ fn intersection(@builtin(workgroup_id) wg_id: vec3<u32>,
                 let size = n_minimized + comb_size - chunk;
                 slen = minimize(sbase, slen, size, l_idx);
             } else {
-                n_minimized = minimize(slen, 0u, n_minimized + 64u, l_idx);
+                n_minimized = minimize(sbase + slen, 0u, n_minimized + 64u, l_idx);
             }
         }
     }

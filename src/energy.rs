@@ -100,6 +100,10 @@ impl Energy {
         }
     }
 
+    pub fn raw_data(&self) -> &[u32] {
+        &self.data
+    }
+
     pub fn zero(conf: EnergyConf) -> Self {
         Energy {
             data: vec![0; conf.energy_size() as usize],
@@ -500,7 +504,7 @@ impl From<Upd> for i32 {
 
 #[derive(Clone, PartialEq)]
 pub struct Update{
-    pub(crate) data: Vec<u32>,
+    data: Vec<u32>,
     conf: EnergyConf,
 }
 
@@ -518,6 +522,10 @@ impl Update {
             data: data.to_vec(),
             conf,
         }
+    }
+
+    pub fn raw_data(&self) -> &[u32] {
+        &self.data
     }
 
     pub fn zero(conf: EnergyConf) -> Self {

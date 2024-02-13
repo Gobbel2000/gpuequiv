@@ -184,7 +184,7 @@ impl DefendPosition {
 
         if !self.qx.is_empty() {
             positions.push(Position::attack(p, self.qx.clone()));
-            weights.array.push_row(aview1(&revival_update.data)).unwrap();
+            weights.array.push_row(aview1(revival_update.raw_data())).unwrap();
         }
 
         (positions, weights)
