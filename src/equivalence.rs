@@ -51,7 +51,7 @@ impl StartInfo {
 pub struct Equivalence {
     pub start_info: StartInfo,
     pub energies: Vec<EnergyArray>,
-    pos_to_idx: FxHashMap<AttackPosition, usize>,
+    pub pos_to_idx: FxHashMap<AttackPosition, usize>,
 }
 
 impl Equivalence {
@@ -74,15 +74,12 @@ impl Equivalence {
 
     /// Retrieve energies associated with the position `(p, q)`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the position `(p, q)` was not included in the initial starting points for game
-    /// graph generation.
-    pub fn energies(&self, p: u32, q: u32) -> &EnergyArray {
+    /// If the position `(p, q)` was not included in the initial starting points for game
+    /// graph generation, returns `None`.
+    pub fn energies(&self, p: u32, q: u32) -> Option<&EnergyArray> {
         let pos = AttackPosition { p, q: vec![q] };
-        let idx = self.pos_to_idx.get(&pos)
-            .expect("Position not included in starting points for energy game");
-        self.energies.get(*idx).expect("Energy list out of range")
+        self.pos_to_idx.get(&pos)
+            .and_then(|idx| self.energies.get(*idx))
     }
 
     /// Returns `true`, if process `p` is covered by process 'q' according to a given
@@ -93,25 +90,21 @@ impl Equivalence {
     ///
     /// `self.equiv(p, q, equ) == true` if and only if `self.preorder(p, q, equ) && self.preorder(q, p, equ)`
     ///
-    /// # Panics
-    ///
-    /// Panics if the position `(p, q)` was not included in the initial starting points for game
-    /// graph generation.
+    /// No bound checks are performed. If either `p` or `q` are outside the range of processes,
+    /// `false` is always returned.
     pub fn preorder(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
         if p == q {
             return true;
         }
-        self.energies(p, q).test_equivalence(equivalence)
+        self.energies(p, q).is_some_and(|e| e.test_equivalence(equivalence))
     }
 
     /// Returns `true`, if processes `p` and `q` are equivalent according to the given equivalence.
     /// In contrast to [`preorder`](Equivalence::preorder), this function requires the equivalence in both directions, so
     /// the order of `p` and `q` doesn't matter.
     ///
-    /// # Panics
-    ///
-    /// Panics if the position `(p, q)` was not included in the initial starting points for game
-    /// graph generation.
+    /// No bound checks are performed. If either `p` or `q` are outside the range of processes,
+    /// `false` is always returned.
     pub fn equiv(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
         self.preorder(p, q, equivalence) && self.preorder(q, p, equivalence)
     }
@@ -129,7 +122,8 @@ impl Equivalence {
         for (pos, energy) in self.start_info.starting_points.iter().zip(&self.energies) {
             let p = pos.p;
             let q = pos.q[0];
-            let e2 = &self.energies(q, p);
+            let e2 = &self.energies(q, p)
+                .expect("Position not included in starting points for energy game");
             if energy.test_equivalence(equivalence) && e2.test_equivalence(equivalence) {
                 union.union(p as usize, q as usize);
             }

@@ -87,7 +87,7 @@ async fn run() -> Result<()> {
                                std_equivalences::failure_traces()));
     // Preorder comparison
     println!("Process 0 can simulate process 9: {}",
-             equivalence.preorder(minimization[0] as u32, minimization[0] as u32,
+             equivalence.preorder(minimization[0] as u32, minimization[9] as u32,
                                   std_equivalences::simulation()));
     Ok(())
 }
