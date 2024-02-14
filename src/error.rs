@@ -12,7 +12,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::NoAdapter => write!(f, "could not get GPU adapter"),
-            Error::NoDevice(source) => write!(f, "could not get GPU device: {}", source),
+            Error::NoDevice(source) => write!(f, "could not get GPU device: {source}"),
             Error::Overflow => write!(f, "overflow occured during calculation, input size too large"),
             Error::BufferMap(source) => source.fmt(f),
         }

@@ -145,7 +145,7 @@ impl TransitionSystem {
     }
 
     fn sort_labels(&mut self) {
-        for row in self.adj.iter_mut() {
+        for row in &mut self.adj {
             row.sort_by_key(|t| t.label);
         }
     }

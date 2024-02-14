@@ -345,7 +345,7 @@ impl EnergyGame {
         let mut runner = self.get_gpu_runner().await?;
         runner.execute_gpu().await
             // Return final energy table
-            .map(|_| self.energies.as_slice())
+            .map(|()| self.energies.as_slice())
     }
 }
 
@@ -678,10 +678,10 @@ impl DefendIterShader {
             queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
         }
 
-        if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
-            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
-        } else {
+        if buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
+        } else {
+            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
         }
 
         let sup_size = self.sup_size();
@@ -1121,7 +1121,7 @@ impl AttackShader {
     fn minima_size(&self) -> u64 {
         const BITS: i64 = MinFlags::BITS as i64;
         let n = self.node_offsets.last().map(|n| n.offset).unwrap_or_default();
-        (((n as i64 - 1) / BITS + 1) * BITS / 8) as u64
+        (((i64::from(n) - 1) / BITS + 1) * BITS / 8) as u64
     }
     #[inline]
     fn changed_size(&self) -> u64 {
@@ -1161,10 +1161,10 @@ impl AttackShader {
             queue.write_buffer(&self.node_offsets_buf, 0, bytemuck::cast_slice(&self.node_offsets));
         }
 
-        if !buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
-            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
-        } else {
+        if buffer_fits(&successor_offsets, &self.successor_offsets_buf) {
             queue.write_buffer(&self.successor_offsets_buf, 0, bytemuck::cast_slice(&successor_offsets));
+        } else {
+            self.successor_offsets_buf = Self::get_successor_offsets_buf(device, &successor_offsets);
         }
 
         let minima_size = self.minima_size();

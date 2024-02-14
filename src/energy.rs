@@ -121,9 +121,7 @@ impl Energy {
 impl PartialOrd for Energy {
     // Element-wise partial comparison between two energy tuples
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.conf.elements != other.conf.elements {
-            panic!("Incompatible Energy configurations");
-        }
+        assert_eq!(self.conf.elements, other.conf.elements, "Incompatible Energy configurations");
         let mut less = true;
         let mut greater = true;
         for (e0, e1) in iter::zip(self.to_vec(), other.to_vec()) {
@@ -304,11 +302,9 @@ impl EnergyArray {
     ///
     /// # Panics
     ///
-    /// If `self` and `equivalence` do not have the same EnergyConfiguration.
+    /// If `self` and `equivalence` do not have the same [`EnergyConf`].
     pub fn test_equivalence(&self, equivalence: &Energy) -> bool {
-        if self.conf != equivalence.conf {
-            panic!("Incompatible Energy configurations");
-        }
+        assert_eq!(self.conf, equivalence.conf, "Incompatible Energy configurations");
         // The equivalence is disproven if the equivalence's tuple lies within the set of winning
         // energies, meaning there exists a formula within the subset of formulas characterizing
         // the equivalence, that distinguishes the processes.
@@ -375,14 +371,14 @@ impl fmt::Display for EnergyArray {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = "[".to_string();
         for energy in self.iter() {
-            out.push_str(&format!("{}\n ", energy));
+            out.push_str(&format!("{energy}\n "));
         }
         if out.len() >= 2 {
             out.replace_range(out.len() - 2.., "]");
         } else {
             out.push(']');
         }
-        write!(f, "{}", out)
+        write!(f, "{out}")
     }
 }
 
@@ -608,7 +604,7 @@ impl fmt::Debug for Update {
         let vec = self.to_vec();
         write!(f, "<{}", vec.first().copied().unwrap_or_default())?;
         for e in self.to_vec().iter().skip(1) {
-            write!(f, " {}", e)?;
+            write!(f, " {e}")?;
         }
         write!(f, ">")
     }
@@ -651,9 +647,7 @@ impl UpdateArray {
     }
 
     pub fn push_n(&mut self, update: Update, n: usize) {
-        if update.conf != self.conf {
-            panic!("Incompatible configurations");
-        }
+        assert_eq!(update.conf, self.conf, "Incompatible energy configurations");
         let row = aview1(&update.data);
         let view = row.broadcast((n, update.data.len())).unwrap();
         self.array.append(Axis(0), view).unwrap();
@@ -698,9 +692,11 @@ impl UpdateArray {
             .expect("Array should be contiguous and in standard layout"), self.conf))
     }
 
-    /// Constructs an UpdateArray struct from array data.
+    /// Constructs an [`UpdateArray`] struct from array data.
     /// Care must be taken to only provide valid data. This function does not check whether the
-    /// data in the array adheres to conf.max and whether all padding bits are zeroed.
+    /// data in the array adheres to `conf.max` and whether all padding bits are zeroed.
+    ///
+    /// # Panics
     ///
     /// The only check is that the number of columns in the array matches the width required for
     /// the configuration. If it doesn't match, this function panics.

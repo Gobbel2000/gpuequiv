@@ -22,8 +22,8 @@ impl AttackPosition {
         let (observation_update, challenge_update) = {
             static ONCE: OnceLock<(Update, Update)> = OnceLock::new();
             ONCE.get_or_init(|| (
-                Update::new(&update![Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
-                Update::new(&update![0, Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
+                Update::new(&[Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
+                Update::new(&[Upd::Zero, Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
             ))
         };
         let mut positions = Vec::with_capacity(lts.adj(self.p).len() + 4);
@@ -173,12 +173,12 @@ impl DefendPosition {
         let (revival_update, answer_update) = {
             static ONCE: OnceLock<(Update, Update)> = OnceLock::new();
             ONCE.get_or_init(|| (
-                Update::new(&update![Upd::Min(3)], GameBuild::ENERGY_CONF).unwrap(),
-                Update::new(&update![0, 0, 0, Upd::Min(3)], GameBuild::ENERGY_CONF).unwrap(),
+                Update::new(&[Upd::Min(3)], GameBuild::ENERGY_CONF).unwrap(),
+                Update::new(&[Upd::Zero, Upd::Zero, Upd::Zero, Upd::Min(3)], GameBuild::ENERGY_CONF).unwrap(),
             ))
         };
         let p = self.p;
-        let mut positions = Vec::with_capacity(self.q.len() + (!self.qx.is_empty()) as usize);
+        let mut positions = Vec::with_capacity(self.q.len() + (usize::from(!self.qx.is_empty())));
         positions.extend(self.q.iter().map(|&q| Position::clause(p, q)));
         let mut weights = UpdateArray::repeat(answer_update.clone(), positions.len());
 
