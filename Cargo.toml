@@ -14,7 +14,7 @@ exclude = ["/graphgen/"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = "0.19"
+wgpu = "0.19.3"
 log = "0.4"
 bytemuck = "1.14"
 futures-intrusive = "0.5"

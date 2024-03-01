@@ -1,8 +1,3 @@
 [alias]
 run-wasm = ["run", "--release", "--package", "run-wasm", "--", "--example", "compare_all"]
 run-csv = ["run", "--example", "run-csv"]
-
-[build]
-rustflags = [
-"--cfg=web_sys_unstable_apis"
-]
