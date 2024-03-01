@@ -20,7 +20,6 @@ bytemuck = "1.14"
 futures-intrusive = "0.5"
 ndarray = "0.15"
 regex-lite = "0.1"
-#partitions = { version = "0.2", default-features = false }
 disjoint-sets = "0.4"
 # For faster hashsets and hashmaps
 rustc-hash = "1.1"
