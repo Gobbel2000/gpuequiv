@@ -90,6 +90,25 @@ impl TransitionSystem {
         }
         (subset, superset)
     }
+
+    /// Returns all processes partitioned by enabledness.
+    ///
+    /// The returned mapping maps from lists of enabled actions
+    /// to the list of all processes having exactly that set of actions.
+    fn enabledness_partitions(&self) -> FxHashMap<Box<[i32]>, Vec<u32>> {
+        let mut partition: FxHashMap<Box<[i32]>, Vec<u32>> = FxHashMap::default();
+        for p in 0..self.n_vertices() {
+            let mut enabled: Vec<i32> = self.adj(p).iter().map(|transition| transition.label).collect();
+            enabled.sort();
+            enabled.dedup();
+            if let Some(processes) = partition.get_mut(enabled.as_slice()) {
+                processes.push(p);
+            } else {
+                partition.insert(enabled.into_boxed_slice(), vec![p]);
+            }
+        }
+        partition
+    }
 }
 
 
@@ -123,13 +142,26 @@ impl GameBuild {
     pub fn compare_multiple(
         lts: &TransitionSystem,
         processes: &[u32],
-        skip_enabledness: bool,
+        prune_enabledness: bool,
     ) -> (Self, StartInfo) {
         let mut builder = Self::default();
-        for &p in processes {
-            for &q in processes {
-                if p != q && (!skip_enabledness || lts.compare_enabled(p, q) == (true, true)) {
-                    builder.new_node(Position::attack(p, vec![q]));
+        if prune_enabledness{
+            // Only compare if p and q are inside the same enabledness equivalence class
+            for partition in lts.enabledness_partitions().values() {
+                for p in partition {
+                    for q in partition {
+                        if p != q {
+                            builder.new_node(Position::attack(*p, vec![*q]));
+                        }
+                    }
+                }
+            }
+        } else {
+            for p in processes {
+                for q in processes {
+                    if p != q {
+                        builder.new_node(Position::attack(*p, vec![*q]));
+                    }
                 }
             }
         }
@@ -140,11 +172,13 @@ impl GameBuild {
 
     pub fn compare_all(lts: &TransitionSystem) -> (Self, StartInfo) {
         let mut builder = Self::default();
-        for p in 0..lts.n_vertices() {
-            for q in 0..lts.n_vertices() {
-                // Only compare if p and q have the same enabled actions
-                if p != q && lts.compare_enabled(p, q) == (true, true) {
-                    builder.new_node(Position::attack(p, vec![q]));
+        // Only compare if p and q are inside the same enabledness equivalence class
+        for partition in lts.enabledness_partitions().values() {
+            for p in partition {
+                for q in partition {
+                    if p != q {
+                        builder.new_node(Position::attack(*p, vec![*q]));
+                    }
                 }
             }
         }
