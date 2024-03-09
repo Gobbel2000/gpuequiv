@@ -45,7 +45,7 @@ macro_rules! earray {
 #[pollster::test]
 async fn simple() {
     let c = EnergyConf::STANDARD;
-    let mut game = simple_graph();
+    let game = simple_graph();
     assert_eq!(game.run().await.unwrap(),
         &[
             earray![c, vec![1, 1]],
@@ -117,7 +117,7 @@ async fn fork() {
         [false, true, false, false].to_vec(),
         c,
     );
-    let mut game = EnergyGame::standard_reach(graph);
+    let game = EnergyGame::standard_reach(graph);
     assert_eq!(game.run().await.unwrap(),
         &[
             earray![c, vec![1, 0, 0, 1], vec![0, 1, 0, 1]],
@@ -171,7 +171,7 @@ fn combinations_graph() -> EnergyGame {
 #[pollster::test]
 async fn combinations() {
     let c = EnergyConf::STANDARD;
-    let mut game = combinations_graph();
+    let game = combinations_graph();
     assert_eq!(game.run().await.unwrap(),
         &[
             earray![c, vec![3, 1, 1, 1, 0, 2], vec![2, 1, 2, 1, 0, 2]],
@@ -238,6 +238,6 @@ fn wide(single: u32, double: u32) -> (EnergyGame, Vec<EnergyArray>) {
 
 #[pollster::test]
 async fn wide_game() {
-    let (mut game, expected) = wide(1200, 150);
+    let (game, expected) = wide(1200, 150);
     assert_eq!(game.run().await.unwrap(), expected);
 }

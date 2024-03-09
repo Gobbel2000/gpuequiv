@@ -107,9 +107,9 @@ async fn example_energies() {
             earray!(c, vec![1, 1, 0, 1], vec![1, 2, 0, 0, 1, 2]),
         ];
     let builder = GameBuild::compare(&lts, 0, 1);
-    let mut game = EnergyGame::standard_reach(builder.game);
-    game.run().await.unwrap();
-    for (i, (en, exp)) in game.energies.into_iter().zip(expected).enumerate() {
+    let game = EnergyGame::standard_reach(builder.game);
+    let energies = game.run().await.unwrap();
+    for (i, (en, exp)) in energies.into_iter().zip(expected).enumerate() {
         assert_eq!(en, exp, "Wrong energies for node {i}: {en} != {exp}");
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 
 use bytemuck::Zeroable;
 
-impl<'a> GPURunner<'a> {
+impl GPURunner {
     async fn test_def_shader(&self) -> Result<()> {
         let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Test Defend Intersection shader command encoder")
@@ -61,7 +61,7 @@ fn game() -> (EnergyGame, EnergyArray) {
 
 #[pollster::test]
 async fn test_defend_intersection_shader() {
-    let (mut game, energies) = game();
+    let (game, energies) = game();
     let mut runner = game.get_gpu_runner().await.unwrap();
 
     // Prepare input
@@ -113,7 +113,7 @@ async fn test_defend_intersection_shader() {
 #[pollster::test]
 async fn test_defend_intersection_shader_large() {
     const NODES: u32 = 5;
-    let (mut game, e_once) = game();
+    let (game, e_once) = game();
     let mut runner = game.get_gpu_runner().await.unwrap();
 
     let mut node_offsets = Vec::new();
@@ -241,7 +241,7 @@ async fn test_defend_intersection_antichain() {
         vec![false, true, true, true, true],
         conf,
     );
-    let mut game = EnergyGame::with_reach(graph, vec![]);
+    let game = EnergyGame::with_reach(graph, vec![]);
     let mut runner = game.get_gpu_runner().await.unwrap();
 
     let ac = antichain();
@@ -370,7 +370,7 @@ async fn test_defend_intersection_mixed() {
         EnergyConf::STANDARD,
     );
 
-    let mut game = EnergyGame::with_reach(graph, vec![]);
+    let game = EnergyGame::with_reach(graph, vec![]);
     let mut runner = game.get_gpu_runner().await.unwrap();
 
     let energies = EnergyArray::from_conf([

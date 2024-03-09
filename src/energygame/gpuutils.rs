@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use wgpu::{Buffer, Device, Queue};
 
 use crate::error::{Result, Error};
@@ -10,13 +12,22 @@ pub(crate) struct GPUCommon {
 }
 
 impl GPUCommon {
-    pub(crate) async fn new() -> Result<GPUCommon> {
+    pub(crate) async fn get_gpu() -> Result<&'static GPUCommon> {
+        // Save GPU handle in static memory so it only needs to be accessed once.
+        // GPUCommon.get_device() takes 90ms to run,
+        // so it is best to not call this more often than necessary.
+        static ONCE: OnceLock<GPUCommon> = OnceLock::new();
+        if let Some(gpu) = ONCE.get() {
+            return Ok(gpu);
+        }
+
+        // GPU has not yet been requested.
+        // Because get_device() needs to be async, we cannot put the initialization code into
+        // `ONCE.get_or_init()`. This means if two threads were to call this function at the same
+        // time, the device may be requested more than once, which is not really problematic.
         let (device, queue) = Self::get_device().await?;
 
-        Ok(GPUCommon {
-            device,
-            queue,
-        })
+        Ok(ONCE.get_or_init(|| GPUCommon { device, queue }))
     }
 
     async fn get_device() -> Result<(Device, Queue)> {
