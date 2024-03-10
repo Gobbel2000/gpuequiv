@@ -89,6 +89,9 @@ impl TransitionSystem {
         self.adj.len() as u32
     }
 
+    /// # Panics
+    ///
+    /// Panics if `p` is outside the range of processes of this LTS.
     #[inline]
     pub fn adj(&self, start: u32) -> &[Transition] {
         &self.adj[start as usize]
@@ -104,7 +107,23 @@ impl TransitionSystem {
         self.adj
     }
 
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` are outside the range of processes of this LTS.
     pub async fn compare(&self, p: u32, q: u32) -> Result<EnergyArray> {
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let pm = minimization[p as usize] as u32;
+        let qm = minimization[q as usize] as u32;
+        if pm == qm { // p and q are bisimilar, we don't need to do anything
+            return Ok(EnergyArray::empty(GameBuild::ENERGY_CONF));
+        }
+        reduced.compare_unminimized(pm, qm).await
+    }
+
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` are outside the range of processes of this LTS.
+    pub async fn compare_unminimized(&self, p: u32, q: u32) -> Result<EnergyArray> {
         let builder = GameBuild::compare(self, p, q);
         let game = EnergyGame::standard_reach(builder.game);
         let energies = game.run().await?;

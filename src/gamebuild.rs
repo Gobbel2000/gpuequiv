@@ -138,7 +138,7 @@ pub struct GameBuild {
 }
 
 impl GameBuild {
-    const ENERGY_CONF: EnergyConf = EnergyConf::STANDARD;
+    pub const ENERGY_CONF: EnergyConf = EnergyConf::STANDARD;
 
     pub fn new() -> Self {
         GameBuild {
