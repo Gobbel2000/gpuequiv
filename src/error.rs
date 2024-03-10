@@ -41,6 +41,7 @@ impl From<wgpu::BufferAsyncError> for Error {
     }
 }
 
+/// Type alias for `Result<T, gpuequiv::Error>`
 pub type Result<T> = result::Result<T, Error>;
 
 

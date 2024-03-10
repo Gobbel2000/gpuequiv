@@ -1,5 +1,7 @@
+//! Types for handling results from multiple comparisons.
+//!
 //! This module contains types for conveniently handling the resulting energy budgets
-//! when comparing all processe in an LTS with each other.
+//! when comparing all processes in an LTS with each other.
 //!
 //! It allows inspecting equivalence relations for the various types of equivalences.
 
@@ -35,12 +37,17 @@ impl StartInfo {
 
 #[derive(Debug, Clone)]
 pub struct Equivalence {
+    /// Info about what process pairs were compared.
     pub start_info: StartInfo,
+    /// Computed energies for all starting positions.
     pub energies: Vec<EnergyArray>,
+    /// For a starting position (an [`AttackPosition`] comparing two processes)
+    /// maps to its index in `start_info.starting_points` as well as `energies`.
     pub pos_to_idx: FxHashMap<AttackPosition, usize>,
 }
 
 impl Equivalence {
+    /// Create object by associating computed energies with starting information.
     pub fn new(start_info: StartInfo, mut energies: Vec<EnergyArray>) -> Self {
         assert!(energies.len() >= start_info.starting_points.len(), "Not enough energies");
         // Retain only the required energies

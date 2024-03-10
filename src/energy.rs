@@ -440,6 +440,7 @@ impl FromEnergyConf<&[Vec<u32>]> for EnergyArray {
 }
 
 
+/// A single element of an [`Update`]-tuple
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum Upd {
     #[default]
