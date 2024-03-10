@@ -1,14 +1,13 @@
 pub mod energygame;
 pub mod gamebuild;
+pub mod equivalence;
 mod energy;
 mod error;
 mod bisimulation;
-mod equivalence;
 
 // Re-exports
 pub use energy::*;
 pub use error::*;
-pub use equivalence::*;
 
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -17,6 +16,7 @@ use std::result;
 
 use gamebuild::GameBuild;
 use energygame::EnergyGame;
+use equivalence::Equivalence;
 
 use rustc_hash::FxHashMap;
 
@@ -118,7 +118,7 @@ impl TransitionSystem {
     }
 
     pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
-        let (builder, start_info) = GameBuild::compare_multiple(self, processes, true);
+        let (builder, start_info) = GameBuild::compare_multiple(self, processes);
         let game = EnergyGame::standard_reach(builder.game);
         let energies = game.run().await?;
         Ok(start_info.equivalence(energies))

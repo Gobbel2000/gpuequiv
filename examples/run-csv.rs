@@ -38,7 +38,7 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     println!("Enabledness:  {}", enabledness.count_classes());
     println!("Traces:       {}", traces.count_classes());
     println!("Simulation:   {}", simulation.count_classes());
-    println!("Bisimulation: {}", equivalence.start_info.starting_equivalence.count_classes());
+    println!("Bisimulation: {}", lts.n_vertices());
     Ok(())
 }
 

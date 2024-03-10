@@ -13,30 +13,16 @@ use crate::gamebuild::AttackPosition;
 
 #[derive(Debug, Clone)]
 pub struct StartInfo {
-    pub starting_equivalence: EquivalenceRelation,
+    /// Total number of processes in the LTS.
+    pub n_processes: usize,
+    /// All requested comparisons as positions for two processes.
     pub starting_points: Vec<AttackPosition>,
 }
 
 impl StartInfo {
-    pub fn new(starting_points: Vec<AttackPosition>, n_nodes: usize) -> Self {
+    pub fn new(starting_points: Vec<AttackPosition>, n_processes: usize) -> Self {
         StartInfo {
-            starting_equivalence: UnionFind::new(n_nodes).into(),
-            starting_points,
-        }
-    }
-
-    pub fn from_partition(starting_points: Vec<AttackPosition>, partition: &[usize]) -> Self {
-        let mut union = UnionFind::new(partition.len());
-        let mut representatives = FxHashMap::default();
-        for (proc, part) in partition.iter().enumerate() {
-            if let Some(equal_to) = representatives.get(part) {
-                union.union(*equal_to, proc);
-            } else {
-                representatives.insert(part, proc);
-            } 
-        }
-        StartInfo {
-            starting_equivalence: union.into(),
+            n_processes,
             starting_points,
         }
     }
@@ -118,7 +104,7 @@ impl Equivalence {
     /// Panics if the initial starting points for game graph generation didn't include the full
     /// symmetric closure.
     pub fn relation(&self, equivalence: &Energy) -> EquivalenceRelation {
-        let mut union = self.start_info.starting_equivalence.clone().into_inner();
+        let mut union = UnionFind::new(self.start_info.n_processes);
         for (pos, energy) in self.start_info.starting_points.iter().zip(&self.energies) {
             let p = pos.p;
             let q = pos.q[0];

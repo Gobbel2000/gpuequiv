@@ -7,7 +7,8 @@ use std::rc::Rc;
 use rustc_hash::FxHashMap;
 use ndarray::Axis;
 
-use crate::{TransitionSystem, StartInfo};
+use crate::TransitionSystem;
+use crate::equivalence::StartInfo;
 use crate::energy::{EnergyConf, UpdateArray};
 use crate::energygame::GameGraph;
 
@@ -109,6 +110,22 @@ impl TransitionSystem {
         }
         partition
     }
+
+    /// Only considers part of all processes.
+    fn enabledness_partitions_partial(&self, processes: &[u32]) -> FxHashMap<Box<[i32]>, Vec<u32>> {
+        let mut partition: FxHashMap<Box<[i32]>, Vec<u32>> = FxHashMap::default();
+        for &p in processes {
+            let mut enabled: Vec<i32> = self.adj(p).iter().map(|transition| transition.label).collect();
+            enabled.sort();
+            enabled.dedup();
+            if let Some(processes) = partition.get_mut(enabled.as_slice()) {
+                processes.push(p);
+            } else {
+                partition.insert(enabled.into_boxed_slice(), vec![p]);
+            }
+        }
+        partition
+    }
 }
 
 
@@ -142,23 +159,13 @@ impl GameBuild {
     pub fn compare_multiple(
         lts: &TransitionSystem,
         processes: &[u32],
-        prune_enabledness: bool,
     ) -> (Self, StartInfo) {
+        // Ensure there are no duplicates
         let mut builder = Self::default();
-        if prune_enabledness{
-            // Only compare if p and q are inside the same enabledness equivalence class
-            for partition in lts.enabledness_partitions().values() {
-                for p in partition {
-                    for q in partition {
-                        if p != q {
-                            builder.new_node(Position::attack(*p, vec![*q]));
-                        }
-                    }
-                }
-            }
-        } else {
-            for p in processes {
-                for q in processes {
+        // Only compare if p and q are inside the same enabledness equivalence class
+        for partition in lts.enabledness_partitions_partial(processes).values() {
+            for p in partition {
+                for q in partition {
                     if p != q {
                         builder.new_node(Position::attack(*p, vec![*q]));
                     }
@@ -184,36 +191,6 @@ impl GameBuild {
         }
         builder.build_internal(lts);
         let start_info = StartInfo::new(builder.starting_points(), lts.n_vertices() as usize);
-        (builder, start_info)
-    }
-
-    /// **Do not use this function, instead minimize the LTS with `lts.bisimilar_minimize`,
-    /// and then use `compare_all`.
-    #[doc(hidden)]
-    pub fn compare_all_but_bisimilar(lts: &TransitionSystem) -> (Self, StartInfo) {
-        // Compute bisimulation
-        let (partition, count) = lts.signature_refinement();
-        // Pick one representative for each bisimulation equivalence class
-        let mut represented = vec![false; count];
-        let mut representatives = Vec::new();
-        for (proc, part) in partition.iter().enumerate() {
-            if !represented[*part] {
-                representatives.push(proc as u32);
-                represented[*part] = true;
-            }
-        }
-        // Compare all representatives with each other
-        let mut builder = Self::default();
-        for &p in &representatives {
-            for &q in &representatives {
-                // Only compare if p and q have the same enabled actions
-                if p != q && lts.compare_enabled(p, q) == (true, true) {
-                    builder.new_node(Position::attack(p, vec![q]));
-                }
-            }
-        }
-        builder.build_internal(lts);
-        let start_info = StartInfo::from_partition(builder.starting_points(), &partition);
         (builder, start_info)
     }
 
