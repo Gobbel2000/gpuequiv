@@ -9,12 +9,16 @@ repository = "https://github.com/Gobbel2000/gpuequiv"
 license = "MIT"
 keywords = ["equivalence", "game-theory", "webgpu"]
 categories = ["science"]
-exclude = ["/graphgen/"]
+# Benchmark files are 5MB and not relevant for the crate
+exclude = ["/graphgen/", "/benches/"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = "0.19.3"
+# Use the `fragile-send-sync...` feature so that wgpu types are Send and Sync
+# on WASM. This prevents use of WASM atomics, but is needed for statically
+# storing Device and Queue.
+wgpu = { version = "0.19.3", features = ["fragile-send-sync-non-atomic-wasm"] }
 log = "0.4"
 bytemuck = "1.14"
 futures-intrusive = "0.5"
@@ -26,17 +30,19 @@ rustc-hash = "1.1"
 
 serde = { version = "1.0", features = ["derive"], optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-console_error_panic_hook = "0.1"
-console_log = "1.0"
-wasm-bindgen-futures = "0.4"
-
 [dev-dependencies]
 serde_json = "1.0"
 env_logger = "0.11"
 pollster = { version = "0.3", features = ["macro"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Benchmark framework
 criterion = { version = "0.5", features = ["async"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+wasm-bindgen-futures = "0.4"
 
 [workspace]
 members = [
