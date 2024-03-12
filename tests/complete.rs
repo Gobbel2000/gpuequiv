@@ -29,7 +29,6 @@ fn example_game_graph() {
         vec![
             &Position::attack(0, vec![1]), // (S, {S'}) a
             &Position::attack(2, vec![1]), // (Div, {S'}) a
-            &Position::attack(2, vec![2]), // (Div, {Div}) a
             &Position::defend(0, vec![1], vec![]),  // (S, {S'}, {}) d
             &Position::defend(2, vec![1], vec![]),
             &Position::clause(0, 1),  // (S, S') a^
@@ -48,24 +47,23 @@ fn example_game_graph() {
         ],
     );
     let adj_expected = vec![
-        vec![0, 1, 2, 3],
-        vec![1, 4],
-        vec![],
+        vec![0, 1, 2],
+        vec![1, 3],
+        vec![4],
         vec![5],
-        vec![6],
-        vec![0, 7],
-        vec![1, 8],
-        vec![2, 9, 10],
-        vec![8, 11, 12],
-        vec![2, 9, 13, 14],
-        vec![15],
-        vec![11, 16],
-        vec![17],
-        vec![15, 17],
-        vec![7, 17],
-        vec![0, 7],
+        vec![0, 6],
+        vec![1, 7],
+        vec![8, 9],
+        vec![7, 10, 11],
+        vec![8, 12, 13],
+        vec![14],
+        vec![10, 15],
+        vec![16],
+        vec![14, 16],
+        vec![6, 16],
+        vec![0, 6],
         vec![],
-        vec![1, 8],
+        vec![1, 7],
     ];
     assert_eq!(builder.game.n_vertices() as usize, adj_expected.len());
     for (i, exp) in adj_expected.into_iter().enumerate() {
@@ -89,7 +87,6 @@ async fn example_energies() {
     let expected = vec![
             earray!(c, vec![2, 2, 0, 0, 1, 1]),
             earray!(c, vec![1, 2, 0, 0, 1, 1]),
-            EnergyArray::empty(c),  // (Div, {Div})a: Cannot be won by attacker
             earray!(c, vec![2, 2, 2, 2, 1, 1], vec![2, 3, 0, 0, 2, 3]),
             earray!(c, vec![1, 1, 0, 0, 1, 1]),
             earray!(c, vec![2, 2, 0, 2, 1, 1], vec![2, 3, 0, 0, 2, 3]),

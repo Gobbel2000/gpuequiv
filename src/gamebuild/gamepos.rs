@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use ndarray::aview1;
 use crate::energy::{UpdateArray, Update, Upd, FromEnergyConf};
-use crate::update;
+use crate::{update, Transition};
 use super::{GameBuild, TransitionSystem};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -14,11 +14,6 @@ pub struct AttackPosition {
 
 impl AttackPosition {
     fn successors(&self, lts: &TransitionSystem) -> (Vec<Position>, UpdateArray) {
-        // Truncate search when Q contains p. These positions are always won by the defender.
-        if self.q.contains(&self.p) {
-            return (vec![], UpdateArray::empty(GameBuild::ENERGY_CONF));
-        }
-
         let (observation_update, challenge_update) = {
             static ONCE: OnceLock<(Update, Update)> = OnceLock::new();
             ONCE.get_or_init(|| (
@@ -26,14 +21,20 @@ impl AttackPosition {
                 Update::new(&[Upd::Zero, Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
             ))
         };
+        // Might be a slight overallocation, but never an underallocation
         let mut positions = Vec::with_capacity(lts.adj(self.p).len() + 4);
 
         // Observation moves
-        for transition in lts.adj(self.p) {
-            positions.push(Position::attack(
-                transition.process,
-                self.set_transition(lts, transition.label)
-            ));
+        for Transition { process: p, label } in lts.adj(self.p) {
+            let q = self.set_transition(lts, *label);
+            // Truncate search when Q contains p.
+            // These positions are always won by the defender
+            // since it's impossible to distinguish p from itself.
+
+            // Even though q is already sorted, q.binary_search(p) is not faster here
+            if !q.contains(p) {
+                positions.push(Position::attack(*p, q));
+            }
         }
         let mut weights = UpdateArray::repeat(observation_update.clone(), positions.len());
 
