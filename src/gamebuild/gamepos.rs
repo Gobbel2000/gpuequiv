@@ -126,30 +126,24 @@ pub struct SingletonPosition {
 
 impl SingletonPosition {
     fn successors(&self) -> (Vec<Position>, UpdateArray) {
-        // Save both possible update arrays in static memory
-        let (single_update_array, both_update_array) = {
-            static ONCE: OnceLock<(UpdateArray, UpdateArray)> = OnceLock::new();
-            ONCE.get_or_init(|| (
-                UpdateArray::from_conf([
-                        update![Upd::Min(4)]
-                    ].as_slice(),
-                    GameBuild::ENERGY_CONF).unwrap(),
+        // Cache update array in static memory
+        let update_array = {
+            static ONCE: OnceLock<UpdateArray> = OnceLock::new();
+            ONCE.get_or_init(||
                 UpdateArray::from_conf([
                         update![Upd::Min(4)],
                         update![Upd::Min(5), 0, 0, 0, 0, Upd::Decrement]
                     ].as_slice(),
                     GameBuild::ENERGY_CONF).unwrap(),
-            ))
+            )
         };
 
-        let positive = Position::attack(self.p, vec![self.q]);
-        if self.p == self.q {
-            (vec![positive], single_update_array.clone())
-        } else {
-            // Negative decision: Swap p and q
-            (vec![positive, Position::attack(self.q, vec![self.p])],
-             both_update_array.clone())
-        }
+        // We can assume that p != q because we already
+        // filter out any attack positions where p ∈ Q.
+        debug_assert!(self.p != self.q);
+        (vec![Position::attack(self.p, vec![self.q]),
+              Position::attack(self.q, vec![self.p])],
+         update_array.clone())
     }
 }
 
