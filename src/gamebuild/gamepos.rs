@@ -21,6 +21,15 @@ impl AttackPosition {
                 Update::new(&[Upd::Zero, Upd::Decrement], GameBuild::ENERGY_CONF).unwrap(),
             ))
         };
+        if self.q.is_empty() {
+            // The attacker can win right away, no need to include further observations
+            return (
+                vec![Position::defend(self.p, vec![], vec![])],
+                UpdateArray::from_conf([challenge_update.clone()].as_slice(),
+                                       GameBuild::ENERGY_CONF,
+                    ).unwrap(),
+            );
+        }
         // Might be a slight overallocation, but never an underallocation
         let mut positions = Vec::with_capacity(lts.adj(self.p).len() + 4);
 

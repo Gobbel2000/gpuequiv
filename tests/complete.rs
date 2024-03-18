@@ -57,7 +57,7 @@ fn example_game_graph() {
         vec![7, 10, 11],
         vec![8, 12, 13],
         vec![14],
-        vec![10, 15],
+        vec![15],
         vec![16],
         vec![14, 16],
         vec![6, 16],
