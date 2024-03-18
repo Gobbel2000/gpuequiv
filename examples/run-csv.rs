@@ -15,6 +15,7 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     let (builder, start_info) = GameBuild::compare_all(&lts);
     println!("Game built in {:.5}s", now.elapsed().as_secs_f64());
 
+    println!("Number of starting positions: {}", start_info.starting_points.len());
     println!("Number of nodes: {}", builder.game.n_vertices());
     println!("Number of edges: {}", builder.game.column_indices.len());
 
