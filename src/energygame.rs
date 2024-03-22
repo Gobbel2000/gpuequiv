@@ -325,7 +325,7 @@ impl EnergyGame {
     }
 
     pub fn with_reach(graph: GameGraph, to_reach: Vec<u32>) -> Self {
-        let mut energies = vec![EnergyArray::zero(0, graph.get_conf()); graph.n_vertices() as usize];
+        let mut energies = vec![EnergyArray::empty(graph.get_conf()); graph.n_vertices() as usize];
         for v in &to_reach {
             energies[*v as usize] = EnergyArray::zero(1, graph.get_conf());
         }
@@ -336,14 +336,14 @@ impl EnergyGame {
         }
     }
 
-    pub async fn get_gpu_runner(self) -> Result<GPURunner> {
+    async fn get_gpu_runner(&mut self) -> Result<GPURunner> {
         GPURunner::with_game(self).await
     }
 
-    pub async fn run(self) -> Result<Vec<EnergyArray>> {
+    pub async fn run(&mut self) -> Result<&Vec<EnergyArray>> {
         let mut runner = self.get_gpu_runner().await?;
         runner.execute_gpu().await?;
-        Ok(runner.game.energies)
+        Ok(&self.energies)
     }
 }
 
@@ -1387,8 +1387,8 @@ impl AttackShader {
 }
 
 
-pub struct GPURunner {
-    pub game: EnergyGame,
+struct GPURunner<'a> {
+    game: &'a mut EnergyGame,
 
     gpu: &'static GPUCommon,
     graph_bind_group: wgpu::BindGroup,
@@ -1397,9 +1397,9 @@ pub struct GPURunner {
     defiter_shader: DefendIterShader,
 }
 
-impl GPURunner {
+impl GPURunner<'_> {
 
-    pub async fn with_game(game: EnergyGame) -> Result<GPURunner> {
+    async fn with_game(game: &mut EnergyGame) -> Result<GPURunner> {
         let conf = game.graph.get_conf();
         let gpu_common = GPUCommon::get_gpu().await?;
         let (graph_bind_group_layout, graph_bind_group) = game.graph.bind_group(&gpu_common.device);
@@ -1438,11 +1438,11 @@ impl GPURunner {
         }
     }
 
-    pub async fn execute_gpu(&mut self) -> Result<()> {
+    async fn execute_gpu(&mut self) -> Result<()> {
         self.initialize_visit_lists();
         loop {
-            self.atk_shader.prepare_run(&self.game);
-            self.defiter_shader.prepare_run(&self.game);
+            self.atk_shader.prepare_run(self.game);
+            self.defiter_shader.prepare_run(self.game);
             debug!("Number of attack nodes: {}", self.atk_shader.node_offsets.len() - 1);
             debug!("Number of defend (iterative) nodes: {}", self.defiter_shader.node_offsets.len() - 1);
 
@@ -1467,9 +1467,9 @@ impl GPURunner {
                 receiver.receive().await.expect("Channel should not be closed")?;
             }
 
-            let changed = self.atk_shader.process_results(&mut self.game);
+            let changed = self.atk_shader.process_results(self.game);
             self.changed_nodes(&changed);
-            let changed = self.defiter_shader.process_results(&mut self.game);
+            let changed = self.defiter_shader.process_results(self.game);
             self.changed_nodes(&changed);
 
             if  self.atk_shader.visit_list.is_empty() &&

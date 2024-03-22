@@ -125,9 +125,9 @@ impl TransitionSystem {
     /// Panics if `p` or `q` are outside the range of processes of this LTS.
     pub async fn compare_unminimized(&self, p: u32, q: u32) -> Result<EnergyArray> {
         let builder = GameBuild::compare(self, p, q);
-        let game = EnergyGame::standard_reach(builder.game);
+        let mut game = EnergyGame::standard_reach(builder.game);
         let energies = game.run().await?;
-        Ok(energies.into_iter().next().unwrap())
+        Ok(energies.iter().next().unwrap().clone())
     }
 
     pub async fn compare_multiple(&self, processes: &[u32]) -> Result<(Equivalence, Vec<usize>)> {
@@ -138,9 +138,9 @@ impl TransitionSystem {
 
     pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
         let (builder, start_info) = GameBuild::compare_multiple(self, processes);
-        let game = EnergyGame::standard_reach(builder.game);
-        let energies = game.run().await?;
-        Ok(start_info.equivalence(energies))
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(start_info.equivalence(game.energies))
     }
 
     pub async fn equivalences(&self) -> Result<(Equivalence, Vec<usize>)> {
@@ -151,9 +151,9 @@ impl TransitionSystem {
 
     pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
         let (builder, start_info) = GameBuild::compare_all(self);
-        let game = EnergyGame::standard_reach(builder.game);
-        let energies = game.run().await?;
-        Ok(start_info.equivalence(energies))
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(start_info.equivalence(game.energies))
     }
 
     /// Create LTS from adjacency list. This function assumes that the lists in `adj` are already

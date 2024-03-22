@@ -45,7 +45,7 @@ fn game() -> EnergyGame {
 }
 
 async fn run_game() -> Result<()> {
-    let game = game();
+    let mut game = game();
 
     // Run algorithm on GPU
     let energies = game.run().await?;

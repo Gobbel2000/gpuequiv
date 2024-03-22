@@ -72,7 +72,7 @@ async fn run_json_graph(fname: &OsStr) -> io::Result<()> {
     println!("Read game graph from {}.", fname.to_string_lossy());
 
     // Create an energy game using the game graph
-    let game = EnergyGame::standard_reach(graph);
+    let mut game = EnergyGame::standard_reach(graph);
     // Run the game on GPU
     let energies = game.run().await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;

@@ -20,16 +20,15 @@ async fn csv_lts(fname: &OsStr) -> io::Result<()> {
     println!("Number of edges: {}", builder.game.column_indices.len());
 
     // Create EnergyGame from built game graph
-    let energy_game = EnergyGame::standard_reach(builder.game);
+    let mut energy_game = EnergyGame::standard_reach(builder.game);
 
     // Solve energy game on GPU
     println!("Running game...");
-    let mut runner = energy_game.get_gpu_runner().await.unwrap();
     let now = Instant::now();
-    runner.execute_gpu().await.unwrap();
+    energy_game.run().await.unwrap();
     println!("Ran energy game in {:.5}s", now.elapsed().as_secs_f64());
 
-    let equivalence = start_info.equivalence(runner.game.energies);
+    let equivalence = start_info.equivalence(energy_game.energies);
 
     // Generate various equivalence relations
     println!("\nNumber of equivalence classes according to different equivalences:");
