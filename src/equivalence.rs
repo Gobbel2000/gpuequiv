@@ -13,6 +13,8 @@ use rustc_hash::FxHashMap;
 use crate::{EnergyArray, Energy};
 use crate::gamebuild::AttackPosition;
 
+
+/// Information on the comparisons the algorithm was started with.
 #[derive(Debug, Clone)]
 pub struct StartInfo {
     /// Total number of processes in the LTS.
@@ -29,12 +31,21 @@ impl StartInfo {
         }
     }
 
+    /// Associate this StartInfo with the resulting energies.
     pub fn equivalence(self, energies: Vec<EnergyArray>) -> Equivalence {
         Equivalence::new(self, energies)
     }
 }
 
 
+/// Contains results of comparing multiple processes, allows inspecting equivalence relations.
+///
+/// **Important:** If minimization was applied to the LTS,
+/// this refers to the minimized processes.
+/// Either apply the minimization mapping manually when specifying processes,
+/// or create equivalence relations with [`relation()`](Equivalence::relation)
+/// and apply the mapping to the entire relation using
+/// [`EquivalenceRelation::with_mapping()`].
 #[derive(Debug, Clone)]
 pub struct Equivalence {
     /// Info about what process pairs were compared.
@@ -126,26 +137,21 @@ impl Equivalence {
 }
 
 
+/// Equivalence relation over processes.
+///
+/// **Important:** If minimization was applied to the LTS,
+/// this refers to the minimized processes.
+/// Either apply the minimization mapping manually when specifying processes,
+/// or apply the mapping to the entire equivalence relation using
+/// [`with_mapping()`](EquivalenceRelation::with_mapping).
 #[derive(Debug, Clone)]
 pub struct EquivalenceRelation {
+    /// The underlying union-find data structure.
     pub union: UnionFind,
 }
 
 impl EquivalenceRelation {
-    pub fn with_mapping(&self, mapping: &[usize]) -> Self {
-        let mut union = UnionFind::new(mapping.len());
-        let mut representative = FxHashMap::default();
-        for (proc, minimized) in mapping.iter().enumerate() {
-            let part = self.find(*minimized);
-            if let Some(class) = representative.get(&part) {
-                union.union(proc, *class);
-            } else {
-                representative.insert(part, proc);
-            }
-        }
-        union.into()
-    }
-
+    /// Returns all elements, grouped by their equivalence class.
     pub fn get_classes(&self) -> Vec<Vec<usize>> {
         let mut class_idx = FxHashMap::default();
         let mut classes = Vec::new();
@@ -161,6 +167,7 @@ impl EquivalenceRelation {
         classes
     }
 
+    /// The number of equivalence classes.
     pub fn count_classes(&self) -> u32 {
         let mut class_counted = vec![false; self.len()];
         let mut count = 0;
@@ -174,14 +181,50 @@ impl EquivalenceRelation {
         count
     }
 
+    /// Returns an iterator over the equivalence class containing `proc`.
     pub fn class_of(&self, proc: usize) -> impl Iterator<Item=usize> + '_ {
         let class = self.find(proc);
         (0..self.len())
             .filter(move |i| self.find(*i) == class)
     }
 
-    pub fn into_inner(self) -> UnionFind {
-        self.union
+    /// Create new EquivalenceRelation accounting for a mapping.
+    ///
+    /// This mapping could could be the bisimulation used for minimizing the LTS,
+    /// which maps processes to their bisimulation classes.
+    /// Applying a minimization returns an EquivalenceRelation
+    /// refering to the original processes, not the minimized LTS.
+    ///
+    /// # Example 
+    ///
+    /// ```
+    /// # use disjoint_sets::UnionFind;
+    /// # use gpuequiv::equivalence::EquivalenceRelation;
+    /// let mut relation = EquivalenceRelation{ union: UnionFind::new(4) };
+    /// relation.union.union(0, 2);
+    /// let minimization = vec![1, 1, 2, 2, 3, 3, 0, 0];
+    ///
+    /// // The following two uses are equivalent:
+    /// assert_eq!(relation.equiv(minimization[0], minimization[5]),
+    ///            relation.with_mapping(&minimization).equiv(0, 5));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics, if any element of `mapping` is not included in the union,
+    /// meaning it is less than `self.len()`.
+    pub fn with_mapping(&self, mapping: &[usize]) -> Self {
+        let mut union = UnionFind::new(mapping.len());
+        let mut representative = FxHashMap::default();
+        for (proc, minimized) in mapping.iter().enumerate() {
+            let part = self.find(*minimized);
+            if let Some(class) = representative.get(&part) {
+                union.union(proc, *class);
+            } else {
+                representative.insert(part, proc);
+            }
+        }
+        union.into()
     }
 }
 
