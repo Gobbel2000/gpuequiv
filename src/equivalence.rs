@@ -72,48 +72,81 @@ impl Equivalence {
         }
     }
 
+    /// Apply the minimization mapping, if any, to a process `p`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` is outside the range of mapped processes.
+    #[inline]
+    fn mapped(&self, p: u32) -> u32 {
+        match &self.minimization {
+            Some(mapping) => mapping[p as usize] as u32,
+            None => p,
+        }
+    }
+
     /// Retrieve energies associated with the position `(p, q)`.
     ///
     /// If the position `(p, q)` was not included in the initial starting points for game
     /// graph generation, returns `None`.
-    pub fn energies(&self, mut p: u32, mut q: u32) -> Option<&EnergyArray> {
-        if let Some(minimization) = &self.minimization {
-            p = *minimization.get(p as usize)? as u32;
-            q = *minimization.get(q as usize)? as u32;
-        }
-        self.energies_minimized(p, q)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` is outside the range of processes.
+    pub fn energies(&self, p: u32, q: u32) -> Option<&EnergyArray> {
+        self.energies_minimized(self.mapped(p), self.mapped(q))
     }
 
     /// Energies for comparing the processes `p` and `q` in the minimized LTS.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` is outside the range of minimized processes.
     fn energies_minimized(&self, p: u32, q: u32) -> Option<&EnergyArray> {
+        assert!((p as usize) < self.start_info.n_processes);
+        assert!((q as usize) < self.start_info.n_processes);
         let pos = AttackPosition { p, q: vec![q] };
         self.pos_to_idx.get(&pos)
-            .and_then(|idx| self.energies.get(*idx))
+            .map(|idx| self.energies.get(*idx).expect("pos_to_idx should hold valid indices"))
     }
 
     /// Returns `true`, if process `p` is covered by process 'q' according to a given
     /// `equivalence`. That is, `p <= q` for the preorder induced by `equivalence`.
     ///
-    /// This can be used to test equivalences that are not inherently symmetric. The function
-    /// [`equiv`](Equivalence::equiv) instead requires the preorder to hold in both directions:
+    /// This can be used to test equivalences that are not inherently symmetric.
+    /// The function [`equiv`](Equivalence::equiv) instead requires the preorder
+    /// to hold in both directions:
     ///
     /// `self.equiv(p, q, equ) == true` if and only if `self.preorder(p, q, equ) && self.preorder(q, p, equ)`
     ///
-    /// No bound checks are performed. If either `p` or `q` are outside the range of processes,
+    /// If `p` and `q` were not compared when using
+    /// [`TransitionSystem::compare_multiple()`](crate::TransitionSystem::compare_multiple),
     /// `false` is always returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` is outside the range of processes.
     pub fn preorder(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
+        let p = self.mapped(p);
+        let q = self.mapped(q);
         if p == q {
             return true;
         }
-        self.energies(p, q).is_some_and(|e| e.test_equivalence(equivalence))
+        self.energies_minimized(p, q).is_some_and(|e| e.test_equivalence(equivalence))
     }
 
     /// Returns `true`, if processes `p` and `q` are equivalent according to the given equivalence.
-    /// In contrast to [`preorder`](Equivalence::preorder), this function requires the equivalence in both directions, so
-    /// the order of `p` and `q` doesn't matter.
+    /// In contrast to [`preorder`](Equivalence::preorder),
+    /// this function requires the equivalence in both directions,
+    /// so the order of `p` and `q` doesn't matter.
     ///
-    /// No bound checks are performed. If either `p` or `q` are outside the range of processes,
+    /// If `p` and `q` were not compared when using
+    /// [`TransitionSystem::compare_multiple()`](crate::TransitionSystem::compare_multiple),
     /// `false` is always returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` is outside the range of processes.
     pub fn equiv(&self, p: u32, q: u32, equivalence: &Energy) -> bool {
         self.preorder(p, q, equivalence) && self.preorder(q, p, equivalence)
     }

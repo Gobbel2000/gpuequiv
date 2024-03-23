@@ -17,7 +17,7 @@ use gamebuild::GameBuild;
 use energygame::EnergyGame;
 use equivalence::Equivalence;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// A transition to the next process with a label. Part of a labeled transition system.
 #[derive(Debug, Clone, Copy)]
@@ -148,13 +148,49 @@ impl TransitionSystem {
         Ok(energies.iter().next().unwrap().clone())
     }
 
+    /// Perform comparisons between multiple processes at once.
+    ///
+    /// All combinations of elements of `processes` are compared.
+    /// Note that when querying equivalences between processes that were not specified here,
+    /// `false` is always returned.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gpuequiv::{TransitionSystem, std_equivalences};
+    /// # fn main() {
+    /// #     pollster::block_on(run());
+    /// # }
+    /// # async fn run() {
+    /// let (a, b, c) = (0, 1, 2);
+    /// let lts = TransitionSystem::from(vec![
+    ///     (0, 1, a), (1, 2, b), (1, 3, c),
+    ///     (4, 5, a), (5, 7, b), (4, 6, a), (6, 8, c),
+    /// ]);
+    ///
+    /// let equivalence = lts.compare_multiple(&[0, 1, 4, 5]).await.unwrap();
+    /// // We can look at equivalences between processes 0, 1, 4 and 5.
+    /// assert!(equivalence.equiv(0, 4, std_equivalences::traces()));
+    /// assert!(!equivalence.equiv(1, 5, std_equivalences::enabledness()));
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// If no connection to a GPU could be made, an error is returned.
     pub async fn compare_multiple(&self, processes: &[u32]) -> Result<Equivalence> {
         let (reduced, minimization) = self.bisimilar_minimize();
-        let mut equivalence = reduced.compare_multiple_unminimized(processes).await?;
+        let minimized_set: FxHashSet<u32> = processes.iter()
+            .map(|&p| minimization[p as usize] as u32)
+            .collect();
+        let minimized_processes: Vec<u32> = minimized_set.into_iter().collect();
+        let mut equivalence = reduced.compare_multiple_unminimized(&minimized_processes).await?;
         equivalence.set_minimization(minimization);
         Ok(equivalence)
     }
 
+    /// The same as [`compare_multiple()`](TransitionSystem::compare_multiple),
+    /// but without minimizing the LTS first.
     pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
         let (builder, start_info) = GameBuild::compare_multiple(self, processes);
         let mut game = EnergyGame::standard_reach(builder.game);
@@ -166,7 +202,33 @@ impl TransitionSystem {
     ///
     /// Returns an [`Equivalence`] struct which can be used to explore the results.
     /// See the documentation of [`Equivalence`] for further details.
-    /// The second return element is the mapping used for minimization.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gpuequiv::{TransitionSystem, std_equivalences};
+    /// # fn main() {
+    /// #     pollster::block_on(run());
+    /// # }
+    /// # async fn run() {
+    /// let (a, b, c) = (0, 1, 2);
+    /// let lts = TransitionSystem::from(vec![
+    ///     (0, 1, a), (1, 2, b), (1, 3, c),
+    ///     (4, 5, a), (5, 7, b), (4, 6, a), (6, 8, c),
+    /// ]);
+    ///
+    /// let equivalence = lts.equivalences().await.unwrap();
+    /// // All processes can now be compared
+    /// assert!(!equivalence.preorder(0, 4, std_equivalences::simulation()));
+    /// assert!(equivalence.equiv(0, 4, std_equivalences::traces()));
+    /// assert!(!equivalence.equiv(1, 5, std_equivalences::enabledness()));
+    /// assert!(equivalence.equiv(3, 7, std_equivalences::bisimulation()));
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// If no connection to a GPU could be made, an error is returned.
     pub async fn equivalences(&self) -> Result<Equivalence> {
         let (reduced, minimization) = self.bisimilar_minimize();
         let mut equivalence = reduced.equivalences_unminimized().await?;
@@ -174,6 +236,8 @@ impl TransitionSystem {
         Ok(equivalence)
     }
 
+    /// The same as [`equivalences()`](TransitionSystem::equivalences),
+    /// but without minimizing the LTS first.
     pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
         let (builder, start_info) = GameBuild::compare_all(self);
         let mut game = EnergyGame::standard_reach(builder.game);
