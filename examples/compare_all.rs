@@ -52,9 +52,11 @@ async fn run() -> Result<()> {
     let lts = lts();
 
     // Compare all processes with each other
-    let (equivalence, minimization) = lts.equivalences().await?;
+    let equivalence = lts.equivalences().await?;
 
     // Look at the winning budgets of the game
+    println!("Winning budgets for all starting positions.");
+    println!("Here, the process numbers refer to the minimized LTS.");
     for (energy, position) in equivalence.energies.iter()
         .zip(&equivalence.start_info.starting_points)
     {
@@ -67,28 +69,22 @@ async fn run() -> Result<()> {
     // Count the number of equivalence classes
     println!("Number of Bisimulation equivalence classes: {}", bisimulation.count_classes());
 
-    let failures = equivalence.relation(std_equivalences::failures())
-        .with_mapping(&minimization); // Apply mapping to have an equivalence relation to the original,
-                                      // unminimized LTS.
+    let failures = equivalence.relation(std_equivalences::failures());
     // Construct the equivalence classes themselves
     println!("\nFailure equivalence classes:");
     for class in failures.get_classes() {
         println!("{class:?}");
     }
 
-    // Compare two specific processes using the equivalence relation,
-    // minimization was already applied on the whole relation.
+    // Compare two specific processes using the equivalence relation
     println!("\nFailure Equivalence between processes 0 and 9: {}",
              failures.equiv(0, 9));
-
-    // Directly compare 2 processes. The minimization mapping is applied manually.
+    // Directly compare 2 processes
     println!("Failure Trace Equivalence between processes 0 and 9: {}",
-             equivalence.equiv(minimization[0] as u32, minimization[9] as u32,
-                               std_equivalences::failure_traces()));
+             equivalence.equiv(0, 9, std_equivalences::failure_traces()));
     // Preorder comparison
     println!("Process 0 can simulate process 9: {}",
-             equivalence.preorder(minimization[0] as u32, minimization[9] as u32,
-                                  std_equivalences::simulation()));
+             equivalence.preorder(0, 9, std_equivalences::simulation()));
     Ok(())
 }
 

@@ -19,20 +19,52 @@ use equivalence::Equivalence;
 
 use rustc_hash::FxHashMap;
 
+/// A transition to the next process with a label. Part of a labeled transition system.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transition {
+    /// Target process of this transition
     pub process: u32,
-
-    // Transition labels encoded as i32:
-    // 0 => τ
-    // k => Channel index k, k ∈ ℕ
-    // -k => Co-Action of k, k ∈ ℕ
-    //
-    // Actual names (Strings) should be stored in a separate list
+    /// Transition label encoded as i32
+    ///
+    /// If there are actual names (Strings), they should be stored in a separate list.
     pub label: i32,
 }
 
+/// Labeled Transition System (LTS) graph
+///
+/// The graph is represented by adjacency lists.
+/// Each adjacent node (or process) is stored together with the transition label
+/// in a [`Transition`] struct.
+///
+/// # Creation
+///
+/// A transition system can be constructed from 2-dimensional adjacency lists of transitions:
+/// `Vec<Vec<Transition>>`.
+/// A more convenient specification is listing all edges as 3-tuples `(u32, u32, i32)`,
+/// which includes start and end nodes as well as the edge label.
+/// The list does not need to be sorted.
+/// For example:
+///
+/// ```
+/// use gpuequiv::TransitionSystem;
+///
+/// // Define label names
+/// let (a, b, c) = (0, 1, 2);
+/// let lts = TransitionSystem::from(vec![
+///     (0, 1, a),
+///     (1, 2, b),
+///     (1, 3, c),
+///
+///     (4, 5, a),
+///     (5, 7, b),
+///     (4, 6, a),
+///     (6, 8, c),
+/// ]);
+/// ```
+///
+/// An LTS can also be read from a CSV file.
+/// See [`from_csv_file()`](TransitionSystem::from_csv_file) for details.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransitionSystem {
@@ -42,7 +74,142 @@ pub struct TransitionSystem {
 type Edge = (u32, u32, i32);
 
 impl TransitionSystem {
-    pub fn from_csv_lines(lines: impl Iterator<Item=io::Result<String>>) -> result::Result<Self, CSVError> {
+    /// The number of vertices (or processes) in this transition system.
+    #[inline]
+    pub fn n_vertices(&self) -> u32 {
+        self.adj.len() as u32
+    }
+
+    /// Return the adjacency list,
+    /// containing all available transitions from a process `start`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` is outside the range of processes of this LTS.
+    #[inline]
+    pub fn adj(&self, start: u32) -> &[Transition] {
+        &self.adj[start as usize]
+    }
+
+    /// Run the algorithm to compare processes `p` and `q`.
+    ///
+    /// Returns a set of energies that can be used to determine the equivalences that
+    /// preorder `p` by `q`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use gpuequiv::{TransitionSystem, std_equivalences};
+    /// # fn main() {
+    /// #     pollster::block_on(run());
+    /// # }
+    /// # async fn run() {
+    /// let (a, b, c) = (0, 1, 2);
+    /// let lts = TransitionSystem::from(vec![
+    ///     (0, 1, a), (1, 2, b), (1, 3, c),
+    ///     (4, 5, a), (5, 7, b), (4, 6, a), (6, 8, c),
+    /// ]);
+    ///
+    /// let energies = lts.compare(0, 4).await.unwrap();
+    /// // Process 4 does not simulates process 0
+    /// assert!(!energies.test_equivalence(std_equivalences::simulation()));
+    /// // Process 4 has all traces that process 0 has
+    /// assert!(energies.test_equivalence(std_equivalences::traces()));
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// If no connection to a GPU could be made, an error is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` are outside the range of processes of this LTS.
+    pub async fn compare(&self, p: u32, q: u32) -> Result<EnergyArray> {
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let pm = minimization[p as usize] as u32;
+        let qm = minimization[q as usize] as u32;
+        if pm == qm { // p and q are bisimilar, we don't need to do anything
+            return Ok(EnergyArray::empty(GameBuild::ENERGY_CONF));
+        }
+        reduced.compare_unminimized(pm, qm).await
+    }
+
+    /// The same as [`compare()`](TransitionSystem::compare),
+    /// but without minimizing the LTS first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `p` or `q` are outside the range of processes of this LTS.
+    pub async fn compare_unminimized(&self, p: u32, q: u32) -> Result<EnergyArray> {
+        let builder = GameBuild::compare(self, p, q);
+        let mut game = EnergyGame::standard_reach(builder.game);
+        let energies = game.run().await?;
+        Ok(energies.iter().next().unwrap().clone())
+    }
+
+    pub async fn compare_multiple(&self, processes: &[u32]) -> Result<Equivalence> {
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let mut equivalence = reduced.compare_multiple_unminimized(processes).await?;
+        equivalence.set_minimization(minimization);
+        Ok(equivalence)
+    }
+
+    pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
+        let (builder, start_info) = GameBuild::compare_multiple(self, processes);
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(start_info.equivalence(game.energies))
+    }
+
+    /// Find all equivalences for all process pairs in the LTS.
+    ///
+    /// Returns an [`Equivalence`] struct which can be used to explore the results.
+    /// See the documentation of [`Equivalence`] for further details.
+    /// The second return element is the mapping used for minimization.
+    pub async fn equivalences(&self) -> Result<Equivalence> {
+        let (reduced, minimization) = self.bisimilar_minimize();
+        let mut equivalence = reduced.equivalences_unminimized().await?;
+        equivalence.set_minimization(minimization);
+        Ok(equivalence)
+    }
+
+    pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
+        let (builder, start_info) = GameBuild::compare_all(self);
+        let mut game = EnergyGame::standard_reach(builder.game);
+        game.run().await?;
+        Ok(start_info.equivalence(game.energies))
+    }
+
+    /// Build a labeled transition system from a CSV file.
+    ///
+    /// Each line should represent an edge of the graph,
+    /// containing the three elements start process, end process and label.
+    /// For example the line
+    ///
+    /// ```text
+    /// 4,10,"enter"
+    /// ````
+    ///
+    /// encodes a transition from process `4` to process `10` using the action `enter`.
+    /// Quotes around the label name are optional.
+    /// Note that these label names are not stored. They are replaced by unique integers.
+    ///
+    /// # Errors
+    ///
+    /// A [`CSVError`] is returned if a line does not contain 3 fields,
+    /// if any of the first two fields can not be parsed as an unsigned integer,
+    /// or if there were problems reading the file.
+    pub fn from_csv_file<P: AsRef<Path>>(path: P) -> result::Result<Self, CSVError> {
+        let file = File::open(path)?;
+        let lines = io::BufReader::new(file).lines();
+        Self::from_csv_lines(lines)
+    }
+
+    /// Build a transition system from an iterator of CSV lines.
+    /// The format is described at [`from_csv_file()`](TransitionSystem::from_csv_file).
+    pub fn from_csv_lines(lines: impl Iterator<Item=io::Result<String>>
+    ) -> result::Result<Self, CSVError> {
         let mut adj = vec![];
         let mut labels: FxHashMap<String, i32> = FxHashMap::default();
         labels.insert("i".to_string(), 0);
@@ -75,74 +242,6 @@ impl TransitionSystem {
             adj[from].push(Transition { process: to, label: label_n });
         }
         Ok(TransitionSystem::from(adj))
-    }
-
-    pub fn from_csv_file<P: AsRef<Path>>(path: P) -> result::Result<Self, CSVError> {
-        let file = File::open(path)?;
-        let lines = io::BufReader::new(file).lines();
-        Self::from_csv_lines(lines)
-    }
-
-    #[inline]
-    pub fn n_vertices(&self) -> u32 {
-        self.adj.len() as u32
-    }
-
-    /// # Panics
-    ///
-    /// Panics if `p` is outside the range of processes of this LTS.
-    #[inline]
-    pub fn adj(&self, start: u32) -> &[Transition] {
-        &self.adj[start as usize]
-    }
-
-    /// # Panics
-    ///
-    /// Panics if `p` or `q` are outside the range of processes of this LTS.
-    pub async fn compare(&self, p: u32, q: u32) -> Result<EnergyArray> {
-        let (reduced, minimization) = self.bisimilar_minimize();
-        let pm = minimization[p as usize] as u32;
-        let qm = minimization[q as usize] as u32;
-        if pm == qm { // p and q are bisimilar, we don't need to do anything
-            return Ok(EnergyArray::empty(GameBuild::ENERGY_CONF));
-        }
-        reduced.compare_unminimized(pm, qm).await
-    }
-
-    /// # Panics
-    ///
-    /// Panics if `p` or `q` are outside the range of processes of this LTS.
-    pub async fn compare_unminimized(&self, p: u32, q: u32) -> Result<EnergyArray> {
-        let builder = GameBuild::compare(self, p, q);
-        let mut game = EnergyGame::standard_reach(builder.game);
-        let energies = game.run().await?;
-        Ok(energies.iter().next().unwrap().clone())
-    }
-
-    pub async fn compare_multiple(&self, processes: &[u32]) -> Result<(Equivalence, Vec<usize>)> {
-        let (reduced, minimization) = self.bisimilar_minimize();
-        let equivalence = reduced.compare_multiple_unminimized(processes).await?;
-        Ok((equivalence, minimization))
-    }
-
-    pub async fn compare_multiple_unminimized(&self, processes: &[u32]) -> Result<Equivalence> {
-        let (builder, start_info) = GameBuild::compare_multiple(self, processes);
-        let mut game = EnergyGame::standard_reach(builder.game);
-        game.run().await?;
-        Ok(start_info.equivalence(game.energies))
-    }
-
-    pub async fn equivalences(&self) -> Result<(Equivalence, Vec<usize>)> {
-        let (reduced, minimization) = self.bisimilar_minimize();
-        let equivalence = reduced.equivalences_unminimized().await?;
-        Ok((equivalence, minimization))
-    }
-
-    pub async fn equivalences_unminimized(&self) -> Result<Equivalence> {
-        let (builder, start_info) = GameBuild::compare_all(self);
-        let mut game = EnergyGame::standard_reach(builder.game);
-        game.run().await?;
-        Ok(start_info.equivalence(game.energies))
     }
 
     /// Create a new, minimized LTS where bisimilar processes are consolidated.
@@ -217,7 +316,9 @@ impl TransitionSystem {
             .collect()
     }
 
-    /// Create LTS from adjacency list. This function assumes that the lists in `adj` are already
+    /// Create LTS from adjacency lists.
+    ///
+    /// This function assumes that the lists in `adj` are already
     /// sorted by label. If not, the algorithm will produce incorrect results. Use
     /// [`TransitionSystem::from()`] instead to ensure correct sorting.
     pub fn from_adj_unchecked(adj: Vec<Vec<Transition>>) -> Self {
@@ -230,11 +331,13 @@ impl TransitionSystem {
         }
     }
 
+    /// Return a reference to the inner adjacency lists.
     #[inline]
     pub fn inner(&self) -> &[Vec<Transition>] {
         &self.adj
     }
 
+    /// Take ownership of the inner adjacency lists.
     #[inline]
     pub fn into_inner(self) -> Vec<Vec<Transition>> {
         self.adj
@@ -242,7 +345,7 @@ impl TransitionSystem {
 }
 
 impl From<Vec<Vec<Transition>>> for TransitionSystem {
-    // Create new LTS from adjacency list, ensuring that it is properly sorted
+    /// Create new LTS from adjacency lists, ensuring that they are properly sorted.
     fn from(adj: Vec<Vec<Transition>>) -> Self {
         let mut lts = TransitionSystem::from_adj_unchecked(adj);
         lts.sort_labels();

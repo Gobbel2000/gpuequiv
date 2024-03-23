@@ -39,13 +39,6 @@ impl StartInfo {
 
 
 /// Contains results of comparing multiple processes, allows inspecting equivalence relations.
-///
-/// **Important:** If minimization was applied to the LTS,
-/// this refers to the minimized processes.
-/// Either apply the minimization mapping manually when specifying processes,
-/// or create equivalence relations with [`relation()`](Equivalence::relation)
-/// and apply the mapping to the entire relation using
-/// [`EquivalenceRelation::with_mapping()`].
 #[derive(Debug, Clone)]
 pub struct Equivalence {
     /// Info about what process pairs were compared.
@@ -55,6 +48,8 @@ pub struct Equivalence {
     /// For a starting position (an [`AttackPosition`] comparing two processes)
     /// maps to its index in `start_info.starting_points` as well as `energies`.
     pub pos_to_idx: FxHashMap<AttackPosition, usize>,
+    /// Minimization used to reduce the LTS.
+    pub minimization: Option<Vec<usize>>,
 }
 
 impl Equivalence {
@@ -73,6 +68,7 @@ impl Equivalence {
             start_info,
             energies,
             pos_to_idx,
+            minimization: None,
         }
     }
 
@@ -80,7 +76,16 @@ impl Equivalence {
     ///
     /// If the position `(p, q)` was not included in the initial starting points for game
     /// graph generation, returns `None`.
-    pub fn energies(&self, p: u32, q: u32) -> Option<&EnergyArray> {
+    pub fn energies(&self, mut p: u32, mut q: u32) -> Option<&EnergyArray> {
+        if let Some(minimization) = &self.minimization {
+            p = *minimization.get(p as usize)? as u32;
+            q = *minimization.get(q as usize)? as u32;
+        }
+        self.energies_minimized(p, q)
+    }
+
+    /// Energies for comparing the processes `p` and `q` in the minimized LTS.
+    fn energies_minimized(&self, p: u32, q: u32) -> Option<&EnergyArray> {
         let pos = AttackPosition { p, q: vec![q] };
         self.pos_to_idx.get(&pos)
             .and_then(|idx| self.energies.get(*idx))
@@ -126,24 +131,26 @@ impl Equivalence {
         for (pos, energy) in self.start_info.starting_points.iter().zip(&self.energies) {
             let p = pos.p;
             let q = pos.q[0];
-            let e2 = &self.energies(q, p)
-                .expect("Position not included in starting points for energy game");
+            let e2 = &self.energies_minimized(q, p)
+                .expect("Symmetric position not included in starting points for energy game");
             if energy.test_equivalence(equivalence) && e2.test_equivalence(equivalence) {
                 union.union(p as usize, q as usize);
             }
         }
-        union.into()
+        let relation = EquivalenceRelation::from(union);
+        match &self.minimization {
+            Some(mapping) => relation.with_mapping(mapping),
+            None => relation,
+        }
+    }
+
+    pub(crate) fn set_minimization(&mut self, minimization: Vec<usize>) {
+        self.minimization = Some(minimization);
     }
 }
 
 
 /// Equivalence relation over processes.
-///
-/// **Important:** If minimization was applied to the LTS,
-/// this refers to the minimized processes.
-/// Either apply the minimization mapping manually when specifying processes,
-/// or apply the mapping to the entire equivalence relation using
-/// [`with_mapping()`](EquivalenceRelation::with_mapping).
 #[derive(Debug, Clone)]
 pub struct EquivalenceRelation {
     /// The underlying union-find data structure.
@@ -195,25 +202,11 @@ impl EquivalenceRelation {
     /// Applying a minimization returns an EquivalenceRelation
     /// refering to the original processes, not the minimized LTS.
     ///
-    /// # Example 
-    ///
-    /// ```
-    /// # use disjoint_sets::UnionFind;
-    /// # use gpuequiv::equivalence::EquivalenceRelation;
-    /// let mut relation = EquivalenceRelation{ union: UnionFind::new(4) };
-    /// relation.union.union(0, 2);
-    /// let minimization = vec![1, 1, 2, 2, 3, 3, 0, 0];
-    ///
-    /// // The following two uses are equivalent:
-    /// assert_eq!(relation.equiv(minimization[0], minimization[5]),
-    ///            relation.with_mapping(&minimization).equiv(0, 5));
-    /// ```
-    ///
     /// # Panics
     ///
     /// Panics, if any element of `mapping` is not included in the union,
     /// meaning it is less than `self.len()`.
-    pub fn with_mapping(&self, mapping: &[usize]) -> Self {
+    fn with_mapping(&self, mapping: &[usize]) -> Self {
         let mut union = UnionFind::new(mapping.len());
         let mut representative = FxHashMap::default();
         for (proc, minimized) in mapping.iter().enumerate() {

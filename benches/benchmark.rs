@@ -52,7 +52,7 @@ fn vlts(c: &mut Criterion) {
             &energy_game,
             |b, energy_game| b.to_async(PollsterExecutor)
                 .iter_batched(|| energy_game.clone(),
-                    |energy_game| async move {
+                    |mut energy_game| async move {
                         energy_game.run().await.unwrap();
                     },
                     BatchSize::LargeInput,
