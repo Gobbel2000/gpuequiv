@@ -1,3 +1,149 @@
+//! A GPU-accelerated implementation of an algorithm to find all equivalences
+//! of processes in the Linear-time Branching-time Spectrum.
+//!
+//! This project is part of my bachelor's thesis at Technische Universität Berlin.
+//! The [accompanying thesis text](https://github.com/Gobbel2000/thesis-gpuequiv)
+//! can be consulted as a more in-depth documentation.
+//!
+//! This is a Rust crate implementing the
+//! [Spectroscopy algorithm](https://arxiv.org/abs/2303.08904) by B. Bisping
+//! with a focus on performance and scalability.
+//! To this end, the most critical parts of the algorithm are accelerated by GPU
+//! compute shaders.
+//! The [wgpu](https://github.com/gfx-rs/wgpu) crate is used
+//! for interfacing with the system's GPU API.
+//! Shaders are written in the WebGPU Shading Language
+//! ([WGSL](https://gpuweb.github.io/gpuweb/wgsl/)).
+//! These technologies are based on the up-and-coming WebGPU API,
+//! aiming to enable advanced access to GPUs in web browsers.
+//! Therefore, this crate can be used in WebAssembly,
+//! although it requires the browser to support the WebGPU API.
+//!
+//! Requires **Rust version** >= 1.73.
+//!
+//! ### Equivalences
+//!
+//! For an input Labeled Transition System, the algorithm will decide for any
+//! process pair which of the behavioral equivalences in the following spectrum
+//! hold and which don't. See [`std_equivalences`].
+//!
+//! * Enabledness
+//! * Trace Equivalence
+//! * Failures
+//! * Failure Traces
+//! * Readiness
+//! * Readiness Traces
+//! * Revivals
+//! * Impossible Futures
+//! * Possible Futures
+//! * Simulation
+//! * Ready Simulation
+//! * Nested 2-Simulation
+//! * Bisimulation
+//!
+//! # Usage
+//!
+//! Most of this crate's functionality can be accessed through the
+//! [`TransitionSystem`] struct.
+//! After constructing a transition system,
+//! equivalences can be computed either between two processes
+//! or between all process pairs of the system.
+//!
+//! ### Comparing two processes
+//!
+//! Using [`TransitionSystem::compare()`], the energies for comparing two
+//! processes can be computed.
+//! These energies encode the equivalences between them,
+//! which can be tested using [`EnergyArray::test_equivalence()`]
+//! with the definitions of the various equivalence notions from
+//! [`std_equivalences`].
+//! The following example calculates the equivalences between processes 0 and 4:
+//!
+//!
+//! ```
+//! use gpuequiv::{TransitionSystem, std_equivalences};
+//!
+//! # fn main() {
+//! #     pollster::block_on(run());
+//! # }
+//! # async fn run() {
+//! let (a, b, c) = (0, 1, 2);
+//! let lts = TransitionSystem::from(vec![
+//!     (0, 1, a), (1, 2, b), (1, 3, c),
+//!     (4, 5, a), (5, 7, b), (4, 6, a), (6, 8, c),
+//! ]);
+//!
+//! let energies = lts.compare(0, 4).await.unwrap();
+//! // Process 4 does not simulates process 0
+//! assert!(!energies.test_equivalence(std_equivalences::simulation()));
+//! // Process 4 has all traces that process 0 has
+//! assert!(energies.test_equivalence(std_equivalences::traces()));
+//! # }
+//! ```
+//!
+//! ### Comparing all processes in a system
+//!
+//! Handling the information for equivalences between all process pairs
+//! is a bit more involved.
+//! The function [`TransitionSystem::equivalences()`]
+//! returns an [`Equivalence`] struct,
+//! which can be used to explore equivalences between any two processes,
+//! and even to construct equivalence relations.
+//! Some of the ways in which that can be used are shown below:
+//!
+//! ```
+//! use gpuequiv::{TransitionSystem, std_equivalences};
+//!
+//! # fn main() {
+//! #     pollster::block_on(run());
+//! # }
+//! # async fn run() {
+//! let (a, b, c) = (0, 1, 2);
+//! let lts = TransitionSystem::from(vec![
+//!     (0, 1, a), (1, 2, b), (1, 3, c),
+//!     (4, 5, a), (5, 7, b), (4, 6, a), (6, 8, c),
+//! ]);
+//!
+//! let equivalence = lts.equivalences().await.unwrap();
+//!
+//! // 4 is simulated by 0, but not the other way around, so they are not simulation-equivalent
+//! assert!(equivalence.preorder(4, 0, std_equivalences::simulation()));
+//! assert!(!equivalence.equiv(4, 0, std_equivalences::simulation()));
+//!
+//! // All process pairs can be queried
+//! assert!(!equivalence.equiv(1, 5, std_equivalences::enabledness()));
+//! assert!(equivalence.equiv(3, 7, std_equivalences::bisimulation()));
+//!
+//! // Inspect the trace equivalence relation
+//! let traces = equivalence.relation(std_equivalences::traces());
+//! assert_eq!(traces.count_classes(), 5);
+//!
+//! // All processes that are trace-equivalent with process 0
+//! let mut class_of_0 = traces.class_of(0);
+//! assert_eq!(class_of_0.next(), Some(0));
+//! assert_eq!(class_of_0.next(), Some(4));
+//! assert_eq!(class_of_0.next(), None);
+//! # }
+//! ```
+//!
+//! # Further Examples
+//!
+//! The [`examples`](https://github.com/Gobbel2000/gpuequiv/tree/master/examples)
+//! directory in the repository contains further example files
+//! on how this crate can be used.
+//! [`compare.rs`](https://github.com/Gobbel2000/gpuequiv/blob/master/examples/compare.rs)
+//! and
+//! [`compare_all.rs`](https://github.com/Gobbel2000/gpuequiv/blob/master/examples/compare_all.rs)
+//! further exemplify how this crate can be used to compare two or all processes,
+//! [`energygame.rs`](https://github.com/Gobbel2000/gpuequiv/blob/master/examples/energygame.rs)
+//! solves just an energy game, that was not created from an LTS.
+//!
+//! # Serde
+//!
+//! When compiled with the feature flag `serde` (disabled by default),
+//! the structs [`TransitionSystem`] and [`EnergyGame`] implement serde's
+//! `Serialize` and `Deserialize` traits.
+
 pub mod energygame;
 pub mod gamebuild;
 pub mod equivalence;
