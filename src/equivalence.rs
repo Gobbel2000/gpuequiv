@@ -119,10 +119,6 @@ impl Equivalence {
     ///
     /// `self.equiv(p, q, equ) == true` if and only if `self.preorder(p, q, equ) && self.preorder(q, p, equ)`
     ///
-    /// If `p` and `q` were not compared when using
-    /// [`TransitionSystem::compare_multiple()`](crate::TransitionSystem::compare_multiple),
-    /// `false` is always returned.
-    ///
     /// # Panics
     ///
     /// Panics if `p` or `q` is outside the range of processes.
@@ -139,10 +135,6 @@ impl Equivalence {
     /// In contrast to [`preorder`](Equivalence::preorder),
     /// this function requires the equivalence in both directions,
     /// so the order of `p` and `q` doesn't matter.
-    ///
-    /// If `p` and `q` were not compared when using
-    /// [`TransitionSystem::compare_multiple()`](crate::TransitionSystem::compare_multiple),
-    /// `false` is always returned.
     ///
     /// # Panics
     ///

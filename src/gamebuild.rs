@@ -129,17 +129,24 @@ impl TransitionSystem {
 }
 
 
+/// Generates an energy game graph from a [`TransitionSystem`]
 #[derive(Clone, Debug)]
 pub struct GameBuild {
+    /// The generated game graph
     pub game: GameGraph,
+    /// The actual game positions, in the same order as in the game graph
     pub nodes: Vec<Rc<Position>>,
+    /// Map from positions to indices in `nodes`. Used for deduplication.
     pub node_map: FxHashMap<Rc<Position>, u32>,
+    /// Number of starting positions, used to seed the generation
     pub n_starting_points: usize,
 }
 
 impl GameBuild {
+    /// This energy game uses 6-dimensional energies capped at 3
     pub const ENERGY_CONF: EnergyConf = EnergyConf::STANDARD;
 
+    /// New, empty game builder
     pub fn new() -> Self {
         GameBuild {
             game: GameGraph::empty(Self::ENERGY_CONF),
@@ -149,6 +156,7 @@ impl GameBuild {
         }
     }
 
+    /// Build a game from a single starting position, comparing `p` and `q`.
     pub fn compare(lts: &TransitionSystem, p: u32, q: u32) -> Self {
         let mut builder = Self::default();
         builder.new_node(Position::attack(p, vec![q]));
@@ -156,11 +164,14 @@ impl GameBuild {
         builder
     }
 
+    /// Multiple starting positions for comparing within a subset of processes.
+    ///
+    /// This function does not have an interface under [`TransitionSystem`],
+    /// because [`Equivalence`](crate::equivalence::Equivalence) does not support it.
     pub fn compare_multiple(
         lts: &TransitionSystem,
         processes: &[u32],
     ) -> (Self, StartInfo) {
-        // Ensure there are no duplicates
         let mut builder = Self::default();
         // Only compare if p and q are inside the same enabledness equivalence class
         for partition in lts.enabledness_partitions_partial(processes).values() {
@@ -177,6 +188,10 @@ impl GameBuild {
         (builder, start_info)
     }
 
+    /// Construct a game graph for comparing all process pairs.
+    ///
+    /// Processes that are not enabledness-equivalent are left out,
+    /// since we already know that no equivalences can hold between them.
     pub fn compare_all(lts: &TransitionSystem) -> (Self, StartInfo) {
         let mut builder = Self::default();
         // Only compare if p and q are inside the same enabledness equivalence class
@@ -194,6 +209,7 @@ impl GameBuild {
         (builder, start_info)
     }
 
+    /// Extract the [`AttackPosition`]s that the generated game was started with.
     pub fn starting_points(&self) -> Vec<AttackPosition> {
         self.nodes.iter()
             .take(self.n_starting_points)
