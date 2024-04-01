@@ -6,6 +6,7 @@ use crate::energy::{UpdateArray, Update, Upd, FromEnergyConf};
 use crate::{update, Transition};
 use super::{GameBuild, TransitionSystem};
 
+/// Attacker Position, comparing a process `p` with a set of processes `q`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AttackPosition {
     pub p: u32,
@@ -127,6 +128,7 @@ impl fmt::Display for AttackPosition {
     }
 }
 
+/// Attacker Clause Position, holding a process `p` and another singleton process `q`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct SingletonPosition {
     pub p: u32,
@@ -165,6 +167,7 @@ impl fmt::Display for SingletonPosition {
 }
 
 
+/// Defender Position, containing a process `p` and two process sets: `q` and `qx`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DefendPosition {
     pub p: u32,
@@ -203,6 +206,7 @@ impl fmt::Display for DefendPosition {
     }
 }
 
+/// Enum unifying all three game positions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Position {
     Attack(AttackPosition),
@@ -211,28 +215,33 @@ pub enum Position {
 }
 
 impl Position {
+    /// Construct a new attack position
     #[inline]
     pub fn attack(p: u32, q: Vec<u32>) -> Self {
         Position::Attack(AttackPosition { p, q })
     }
 
+    /// Construct a new clause position
     #[inline]
     pub fn clause(p: u32, q: u32) -> Self {
         Position::Clause(SingletonPosition { p, q })
     }
 
+    /// Construct a new defend position
     #[inline]
     pub fn defend(p: u32, q: Vec<u32>, qx: Vec<u32>) -> Self {
         Position::Defend(DefendPosition { p, q, qx })
     }
 
+    /// Returns, whether this is an attack position
+    /// (either `Position::Attack` or `Position::Clause`).
     #[inline]
     pub fn is_attack(&self) -> bool {
         matches!(self, Position::Attack(_) | Position::Clause(_))
     }
 
     #[inline]
-    pub fn successors(&self, lts: &TransitionSystem) -> (Vec<Position>, UpdateArray) {
+    pub(super) fn successors(&self, lts: &TransitionSystem) -> (Vec<Position>, UpdateArray) {
         match self {
             Position::Attack(p) => p.successors(lts),
             Position::Clause(p) => p.successors(),

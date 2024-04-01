@@ -1,3 +1,5 @@
+//! Solve energy games with GPU-acceleration
+
 // Private submodules
 mod shadergen;
 mod gpuutils;
@@ -29,6 +31,10 @@ const WORKGROUP_SIZE: u32 = 64;
 // Buffers with size 0 are not allowed.
 const INITIAL_CAPACITY: u64 = 64;
 
+/// Simpler data layout than [`GameGraph`], used for serialization.
+///
+/// When using the feature `serde`, both [`SerdeGameGraph`] and [`GameGraph`]
+/// implement `serde::Serialize` and `serde::Deserialize`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SerdeGameGraph {
     pub conf: EnergyConf,
@@ -103,23 +109,30 @@ impl TryFrom<SerdeGameGraph> for GameGraph {
 }
 
 
+/// Game graph of an [`EnergyGame`].
+///
+/// When using the feature `serde`,
+/// [`GameGraph`] implements `serde::Serialize` and `serde::Deserialize`.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
     serde(try_from = "SerdeGameGraph", into = "SerdeGameGraph"))]
 pub struct GameGraph {
-    // CSR graph representation. colmumn_indices is all adjacency lists, flattened out
+    /// CSR graph representation. colmumn_indices is all adjacency lists, flattened out
     pub column_indices: Vec<u32>,
-    // row_offsets shows where each node's successors start in column_indices array
+    /// row_offsets shows where each node's successors start in column_indices array
     pub row_offsets: Vec<u32>,
-    // weights is structured like column_indices, they must have the same length
+    /// weights is structured like column_indices, they must have the same length
     pub weights: UpdateArray,
 
-    // Reverse edges of graph, also as CSR
+    /// Column indices of reverse graph, which is also stored in CSR format
     pub rev_column_indices: Vec<u32>,
+    /// Row offsets of reverse graph
     pub rev_row_offsets: Vec<u32>,
 
-    // Whether each node is an attacker position or not
+    /// Whether each node is an attacker position or not
+    ///
+    /// One element per node, indexed the same as `row_offsets`, `weights` etc.
     pub attacker_pos: Vec<bool>,
     conf: EnergyConf,
 }
@@ -180,6 +193,7 @@ impl GameGraph {
         }
     }
 
+    /// Create new, empty game graph.
     pub fn empty(conf: EnergyConf) -> Self {
         Self {
             column_indices: Vec::new(),
@@ -192,6 +206,7 @@ impl GameGraph {
         }
     }
 
+    /// Number of nodes or vertices in this graph.
     #[inline]
     pub fn n_vertices(&self) -> u32 {
         self.attacker_pos.len() as u32
@@ -202,18 +217,21 @@ impl GameGraph {
         self.conf
     }
 
+    /// Adjacency list (successors) of node `v`.
     #[inline]
     pub fn adj(&self, v: u32) -> &[u32] {
         let v = v as usize;
         &self.column_indices[self.row_offsets[v] as usize .. self.row_offsets[v + 1] as usize]
     }
 
+    /// Reverse adjacency list (predecessors) of node `v`.
     #[inline]
     pub fn reverse(&self, v: u32) -> &[u32] {
         let v = v as usize;
         &self.rev_column_indices[self.rev_row_offsets[v] as usize .. self.rev_row_offsets[v + 1] as usize]
     }
 
+    /// Ensures, the reverse graph properly corresponds to the regular graph.
     pub fn make_reverse(&mut self) {
         let mut reverse = vec![vec![]; self.n_vertices() as usize];
         for from in 0..self.n_vertices() {
@@ -306,17 +324,26 @@ impl GameGraph {
 }
 
 
+/// The energy game, computes energies for each node in the game graph.
 #[derive(Debug, Clone)]
 pub struct EnergyGame {
+    /// Underlying game graph of this energy game
     pub graph: GameGraph,
-    // One array of energies for each node
+    /// Computed winning attacker energy budgets for each node, initially empty.
+    ///
+    /// The `Vec` holds one array of energies for each node.
     pub energies: Vec<EnergyArray>,
+    /// The set of nodes that the attacker wants to reach.
     pub to_reach: Vec<u32>,
 }
 
 impl EnergyGame {
 
-    // Automatically set nodes to be reached to all defense nodes without outgoing edges
+    /// Create an `EnergyGame` from a [`GameGraph`].
+    ///
+    /// The nodes to be reached by the attacker are automatically set
+    /// to all defense nodes without outgoing edges.
+    /// This is the standard procedure used in the spectroscopy algorithm.
     pub fn standard_reach(graph: GameGraph) -> Self {
         let to_reach = (0..graph.n_vertices())
             .filter(|&v| !graph.attacker_pos[v as usize] && graph.adj(v).is_empty())
@@ -324,6 +351,7 @@ impl EnergyGame {
         Self::with_reach(graph, to_reach)
     }
 
+    /// Create an `EnergyGame` from a [`GameGraph`], specifying nodes to reach for the attacker.
     pub fn with_reach(graph: GameGraph, to_reach: Vec<u32>) -> Self {
         let mut energies = vec![EnergyArray::empty(graph.get_conf()); graph.n_vertices() as usize];
         for v in &to_reach {
@@ -340,6 +368,14 @@ impl EnergyGame {
         GPURunner::with_game(self).await
     }
 
+    /// Process the energy game on the GPU.
+    ///
+    /// Returns a reference to `self.energies`,
+    /// which contains all computed winning budgets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`], if the GPU could not be accessed.
     pub async fn run(&mut self) -> Result<&Vec<EnergyArray>> {
         let mut runner = self.get_gpu_runner().await?;
         runner.execute_gpu().await?;

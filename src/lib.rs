@@ -141,8 +141,9 @@
 //! # Serde
 //!
 //! When compiled with the feature flag `serde` (disabled by default),
-//! the structs [`TransitionSystem`] and [`EnergyGame`] implement serde's
-//! `Serialize` and `Deserialize` traits.
+//! the structs [`TransitionSystem`]
+//! and [`GameGraph`](crate::energygame::GameGraph)
+//! implement serde's `Serialize` and `Deserialize` traits.
 
 pub mod energygame;
 pub mod gamebuild;

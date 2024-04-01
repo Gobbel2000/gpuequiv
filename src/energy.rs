@@ -192,8 +192,9 @@ impl fmt::Display for Energy {
     }
 }
 
-// Energy tuples representing notions of equivalence.
-// From: B. Bisping - Process Equivalence Problems as Energy Games
+/// Definitions for energy tuples representing notions of equivalence.
+///
+/// From: B. Bisping - Process Equivalence Problems as Energy Games
 pub mod std_equivalences {
     use super::{Energy, EnergyConf};
     use std::sync::OnceLock;

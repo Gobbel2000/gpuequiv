@@ -1,3 +1,8 @@
+//! Module for generating [`GameGraph`]s from [`TransitionSystem`]s.
+//!
+//! The struct [`GameBuild`] is used to build game graphs.
+//! This module also contains types for the various positions for comparing processes.
+
 mod gamepos;
 
 use std::cmp::Ordering;
@@ -129,7 +134,7 @@ impl TransitionSystem {
 }
 
 
-/// Generates an energy game graph from a [`TransitionSystem`]
+/// Generates a [`GameGraph`] from a [`TransitionSystem`].
 #[derive(Clone, Debug)]
 pub struct GameBuild {
     /// The generated game graph
