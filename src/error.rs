@@ -4,7 +4,6 @@ use std::{fmt, io, num, error, result};
 pub enum Error {
     NoAdapter,
     NoDevice(wgpu::RequestDeviceError),
-    Overflow,
     BufferMap(wgpu::BufferAsyncError),
 }
 
@@ -13,7 +12,6 @@ impl fmt::Display for Error {
         match self {
             Error::NoAdapter => write!(f, "could not get GPU adapter"),
             Error::NoDevice(source) => write!(f, "could not get GPU device: {source}"),
-            Error::Overflow => write!(f, "overflow occured during calculation, input size too large"),
             Error::BufferMap(source) => source.fmt(f),
         }
     }
