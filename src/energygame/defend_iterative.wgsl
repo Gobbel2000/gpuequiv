@@ -102,18 +102,16 @@ fn prefix_sum(l_idx: u32) {
     workgroupBarrier();
 }
 
-// Minimizes the energies suprema[sbase]..suprema[sbase + size] by removing
-// non-minimal elements and shifting the others as far as possible to the left
-// to fill any gaps.
+// Minimizes the energies suprema[sbase + extra_shift]..suprema[sbase + size]
+// by removing non-minimal elements and shifting the others as far as possible
+// to the left to fill any gaps.
 //
 // extra_shift is the number of energies from the previous iteration. They are
 // not needed anymore and the new energies will be shifted on top of them.
 //
 // Returns the final number of minimal energies.
 fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
-    // Initialize number of filtered out elements with extra_shift, so that
-    // minimal energies get shifted down to sbase.
-    var total_filtered = extra_shift;
+    // Counts the number of minimal energies so far
     var n_minimized = 0u;
     // Index of first considered energy
     let nbase = sbase + extra_shift;
@@ -122,8 +120,9 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
         let extra_i = i + extra_shift;
         let energy = suprema[nbase + i];
         // Minimize energies
-        var filter_out = 0u;
+        var is_minimal = 0u;
         if i < size {
+            is_minimal = 1u;
             // Compare with already minimized energies that have been shifted down to `sbase`
             for (var j = 0u; j < n_minimized; j += 1u) {
                 let e2 = suprema[sbase + j];
@@ -133,11 +132,11 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
                 if j != extra_i && ((eq && extra_i > j) ||
                               (!eq && less_eq(e2, energy))) {
                     // Mark to be filtered out
-                    filter_out = 1u;
+                    is_minimal = 0u;
                     break;
                 }
             }
-            if filter_out == 0u {
+            if is_minimal == 1u {
                 // If not yet marked for removal, check all following energies,
                 // that have not yet been minimized.
                 for (var j = chunk; j < size; j += 1u) {
@@ -148,27 +147,26 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
                     if j != i && ((eq && i > j) ||
                                   (!eq && less_eq(e2, energy))) {
                         // Mark to be filtered out
-                        filter_out = 1u;
+                        is_minimal = 0u;
                         break;
                     }
                 }
             }
         }
-        minima_buf[l_idx] = filter_out;
+        minima_buf[l_idx] = is_minimal;
 
         prefix_sum(l_idx);
-        n_minimized += min(size - chunk, 64u) - minima_total;
+        // Now minima_buf contains the number of minimal energies to the left
+        // of each energy
 
         // Shift energies left to fill any gaps left by non-minimal energies
         storageBarrier();
-        if filter_out == 0u && i < size { // Only shift minimal energies
-            // Shift by number of filtered elements in this chunk +
-            // total previously filtered energies.
-            let shift = minima_buf[l_idx] + total_filtered;
-            suprema[nbase + i - shift] = energy;
+        if is_minimal == 1u { // Only shift minimal energies
+            // Shift down to the index that counts only minimized energies
+            suprema[sbase + n_minimized + minima_buf[l_idx]] = energy;
         }
         storageBarrier();
-        total_filtered += minima_total;
+        n_minimized += minima_total;
     }
     return n_minimized;
 }
