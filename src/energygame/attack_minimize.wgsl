@@ -79,7 +79,6 @@ fn minimize(@builtin(global_invocation_id) g_id: vec3<u32>,
                           (!eq && less_eq(e2, energy))) {
                 // Mark to be filtered out
                 is_minimal = 0u;
-                break;
             }
         }
 

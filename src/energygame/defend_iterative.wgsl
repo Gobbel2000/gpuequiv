@@ -133,7 +133,6 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
                               (!eq && less_eq(e2, energy))) {
                     // Mark to be filtered out
                     is_minimal = 0u;
-                    break;
                 }
             }
             if is_minimal == 1u {
@@ -148,7 +147,6 @@ fn minimize(sbase: u32, extra_shift: u32, size: u32, l_idx: u32) -> u32 {
                                   (!eq && less_eq(e2, energy))) {
                         // Mark to be filtered out
                         is_minimal = 0u;
-                        break;
                     }
                 }
             }
