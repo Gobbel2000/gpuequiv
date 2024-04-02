@@ -53,6 +53,11 @@ members = [
 name = "benchmark"
 harness = false  # Use criterion instead of default bench harness
 
+[[bench]]
+name = "short"
+harness = false
+bench = false  # Don't run by default, only with `cargo bench --bench short`
+
 [[example]]
 name = "json"
 required-features = ["serde"]
