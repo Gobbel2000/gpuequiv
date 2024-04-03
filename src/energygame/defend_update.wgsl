@@ -1,3 +1,13 @@
+// This shader file gets manipulated in a pre-processing step.
+//
+// Any identifiers starting with a `$` are replaced with proper
+// code before compilation, for example `$ENERGY_SIZE`.
+// The replacements are defined in the file `shadergen.rs`.
+//
+// Pre-processed shader files can be inspected by running with the
+// environment variable `GPUEQUIV_DUMP=1`.
+// Doing so writes pre-processed shaders into a new directory `./shaders_dump`.
+
 alias Energy = array<u32, $ENERGY_SIZE>;
 alias Update = array<u32, $UPDATE_SIZE>;
 

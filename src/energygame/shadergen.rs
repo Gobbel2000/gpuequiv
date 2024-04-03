@@ -14,15 +14,15 @@ pub(super) struct ShaderPreproc<'r> {
 }
 
 impl<'r> ShaderPreproc<'r> {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::default()
     }
 
-    pub fn define(&mut self, name: &'r str, replacement: String) {
+    pub(super) fn define(&mut self, name: &'r str, replacement: String) {
         self.replacements.insert(name, replacement);
     }
 
-    pub fn preprocess<'i>(&self, input: &'i str) -> Cow<'i, str> {
+    pub(super) fn preprocess<'i>(&self, input: &'i str) -> Cow<'i, str> {
         let regex = {
             static ONCE: OnceLock<Regex> = OnceLock::new();
             ONCE.get_or_init(|| Regex::new(r"\$(?:(?:\{(?<braced>[[:word:]]+)\})|(?<name>[[:word:]]+))")
@@ -37,7 +37,7 @@ impl<'r> ShaderPreproc<'r> {
         })
     }
 
-    pub fn preprocess_dump<'i>(&self, input: &'i str, name: &str) -> Cow<'i, str> {
+    pub(super) fn preprocess_dump<'i>(&self, input: &'i str, name: &str) -> Cow<'i, str> {
         let processed = self.preprocess(input);
         if std::env::var_os("GPUEQUIV_DUMP").is_some() {
             let dir = "shaders_dump";

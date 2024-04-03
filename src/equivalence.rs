@@ -110,7 +110,7 @@ impl Equivalence {
             .map(|idx| self.energies.get(*idx).expect("pos_to_idx should hold valid indices"))
     }
 
-    /// Returns `true`, if process `p` is covered by process 'q' according to a given
+    /// Returns `true`, if process `p` is covered by process `q` according to a given
     /// `equivalence`. That is, `p <= q` for the preorder induced by `equivalence`.
     ///
     /// This can be used to test equivalences that are not inherently symmetric.
