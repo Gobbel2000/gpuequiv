@@ -1,6 +1,6 @@
 [package]
 name = "gpuequiv"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Gabriel Vogel"]
 edition = "2021"
 rust-version = "1.73"
@@ -52,11 +52,13 @@ members = [
 [[bench]]
 name = "benchmark"
 harness = false  # Use criterion instead of default bench harness
+path = "benches/benchmark.rs" # Explicitly specify path, so that it can be excluded in package
 
 [[bench]]
 name = "short"
 harness = false
 bench = false  # Don't run by default, only with `cargo bench --bench short`
+path = "benches/short.rs"
 
 [[example]]
 name = "json"
