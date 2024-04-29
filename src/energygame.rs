@@ -625,6 +625,7 @@ impl DefendIterShader {
             layout: Some(&update_pipeline_layout),
             module: &update_shader,
             entry_point: "main",
+            compilation_options: Default::default(),
         });
 
         let combine_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -641,6 +642,7 @@ impl DefendIterShader {
             layout: Some(&combine_pipeline_layout),
             module: &combine_shader,
             entry_point: "intersection",
+            compilation_options: Default::default(),
         });
 
         DefendIterShader {
@@ -1100,6 +1102,7 @@ impl AttackShader {
             layout: Some(&update_pipeline_layout),
             module: &update_shader,
             entry_point: "update",
+            compilation_options: Default::default(),
         });
 
         let minima_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1116,6 +1119,7 @@ impl AttackShader {
             layout: Some(&minima_pipeline_layout),
             module: &minima_shader,
             entry_point: "minimize",
+            compilation_options: Default::default(),
         });
 
         AttackShader {

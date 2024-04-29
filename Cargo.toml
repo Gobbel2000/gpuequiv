@@ -18,7 +18,7 @@ exclude = ["/graphgen/", "/benches/"]
 # Use the `fragile-send-sync...` feature so that wgpu types are Send and Sync
 # on WASM. This prevents use of WASM atomics, but is needed for statically
 # storing Device and Queue.
-wgpu = { version = "0.19.3", features = ["fragile-send-sync-non-atomic-wasm"] }
+wgpu = { version = "0.20.0", features = ["fragile-send-sync-non-atomic-wasm"] }
 log = "0.4"
 bytemuck = "1.14"
 futures-intrusive = "0.5"
